@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  purchases-bot:
+    build: .
+    container_name: purchases-bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      SOURCE_ID: goszakupki.by
+      SOURCE_BASE_URL: https://goszakupki.by/tenders/posted
+      SOURCE_PAGES_DEFAULT: ${SOURCE_PAGES_DEFAULT:-2}
+      CHECK_INTERVAL_DEFAULT: ${CHECK_INTERVAL_DEFAULT:-300}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-10}
+      HTTP_CONCURRENCY: ${HTTP_CONCURRENCY:-3}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-2}
+      DB_PATH: /data/app.db
+      TZ: Europe/Helsinki
+      GZ_LIST_ITEM: ${GZ_LIST_ITEM}
+      GZ_TITLE: ${GZ_TITLE}
+      GZ_LINK: ${GZ_LINK}
+      GZ_ID_TEXT: ${GZ_ID_TEXT}
+      GZ_ID_FROM_HREF: ${GZ_ID_FROM_HREF:-0}
+      USE_PLAYWRIGHT: ${USE_PLAYWRIGHT:-0}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
