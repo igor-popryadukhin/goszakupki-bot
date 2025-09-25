@@ -44,6 +44,10 @@ class Detection(Base):
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
+    procedure_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deadline: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    price: Mapped[str | None] = mapped_column(String(128), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 

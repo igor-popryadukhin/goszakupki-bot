@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml poetry.lock* /app/
 RUN pip install --no-cache-dir poetry \
  && poetry config virtualenvs.create false \
- && poetry install --no-interaction --no-ansi --only main
+ && poetry install --no-interaction --no-ansi --only main --no-root
 
 COPY src/ /app/src/
 

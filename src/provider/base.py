@@ -9,6 +9,10 @@ class Listing:
     external_id: str
     title: str | None
     url: str
+    procedure_type: str | None = None
+    status: str | None = None
+    deadline: str | None = None
+    price: str | None = None
 
 
 class SourceProvider(Protocol):

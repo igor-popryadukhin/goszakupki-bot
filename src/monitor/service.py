@@ -38,8 +38,8 @@ class MonitorService:
 
     async def _run_check(self) -> None:
         prefs = await self._repo.list_enabled_preferences()
-        if not prefs:
-            return
+        # Даже если нет включённых подписок, всё равно сканируем страницы
+        # и записываем детекции, чтобы база заполнялась и не было пропусков.
         max_pages = max((pref.pages for pref in prefs if pref.pages > 0), default=self._config.pages_default)
         keyword_map: dict[int, list[Keyword]] = {
             pref.chat_id: compile_keywords(pref.keywords) for pref in prefs
@@ -64,6 +64,10 @@ class MonitorService:
                 external_id=listing.external_id,
                 title=listing.title,
                 url=listing.url,
+                procedure_type=getattr(listing, "procedure_type", None),
+                status=getattr(listing, "status", None),
+                deadline=getattr(listing, "deadline", None),
+                price=getattr(listing, "price", None),
             )
             if not is_new:
                 continue

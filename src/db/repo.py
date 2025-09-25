@@ -130,9 +130,29 @@ class Repository:
                 )
             return prefs
 
-    async def record_detection(self, *, source_id: str, external_id: str, title: str | None, url: str) -> bool:
+    async def record_detection(
+        self,
+        *,
+        source_id: str,
+        external_id: str,
+        title: str | None,
+        url: str,
+        procedure_type: str | None = None,
+        status: str | None = None,
+        deadline: str | None = None,
+        price: str | None = None,
+    ) -> bool:
         async with self._session_factory() as session:
-            detection = Detection(source_id=source_id, external_id=external_id, title=title, url=url)
+            detection = Detection(
+                source_id=source_id,
+                external_id=external_id,
+                title=title,
+                url=url,
+                procedure_type=procedure_type,
+                status=status,
+                deadline=deadline,
+                price=price,
+            )
             session.add(detection)
             try:
                 await session.commit()
@@ -177,3 +197,21 @@ def _split_keywords(text: str) -> list[str]:
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # SQLite: добавить недостающие колонки в detections без миграций
+        try:
+            result = await conn.exec_driver_sql("PRAGMA table_info('detections')")
+            cols = {row[1] for row in result}
+            alters: list[str] = []
+            if "procedure_type" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN procedure_type TEXT")
+            if "status" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN status TEXT")
+            if "deadline" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN deadline VARCHAR(64)")
+            if "price" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN price VARCHAR(128)")
+            for sql in alters:
+                await conn.exec_driver_sql(sql)
+        except Exception:
+            # Безопасно игнорируем, если не SQLite или PRAGMA недоступен
+            pass
