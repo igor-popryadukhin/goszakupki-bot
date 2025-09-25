@@ -45,9 +45,38 @@ class GoszakupkiHttpProvider(SourceProvider):
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Accept": "text/html",
         }
-        # Используем certifi CA bundle для валидации TLS
-        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+        ssl_context: ssl.SSLContext | bool
+        if self._config.http_verify_ssl:
+            ssl_context = ssl.create_default_context()
+            try:
+                ssl_context.load_verify_locations(cafile=certifi.where())
+            except Exception:  # pragma: no cover - extremely unlikely
+                LOGGER.warning("Failed to load certifi CA bundle, using system defaults")
+            if self._config.http_ca_bundle:
+                try:
+                    ssl_context.load_verify_locations(cafile=str(self._config.http_ca_bundle))
+                except Exception as exc:  # pragma: no cover - logged for visibility
+                    LOGGER.warning(
+                        "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(self._config.http_ca_bundle)}
+                    )
+        else:
+            LOGGER.warning(
+                "TLS certificate verification disabled for provider", extra={"source_id": self.source_id}
+            )
+            if self._config.http_ca_bundle:
+                ssl_context = ssl.create_default_context()
+                try:
+                    ssl_context.load_verify_locations(cafile=str(self._config.http_ca_bundle))
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(self._config.http_ca_bundle)}
+                    )
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+            else:
+                ssl_context = False
+
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
         self._session = aiohttp.ClientSession(timeout=timeout, headers=headers, connector=connector)
         try:
             listings = await self.fetch_page(1)

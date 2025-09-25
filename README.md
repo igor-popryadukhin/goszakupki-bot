@@ -20,6 +20,8 @@
    HTTP_TIMEOUT_SECONDS=10
    HTTP_CONCURRENCY=3
    RATE_LIMIT_RPS=2
+   HTTP_CA_BUNDLE=/certs/custom-ca.pem
+   HTTP_VERIFY_SSL=1
    GZ_LIST_ITEM=.tenders-list .tender-card
    GZ_TITLE=.tender-card__title
    GZ_LINK=.tender-card__title a
@@ -27,7 +29,9 @@
    GZ_ID_FROM_HREF=1
    ```
 
-2. При необходимости добавьте другие переменные из `src/config.py`.
+2. Переменная `HTTP_CA_BUNDLE` позволяет указать дополнительный файл с корневыми сертификатами, если сертификат сайта не входит в стандартное хранилище. Значение `HTTP_VERIFY_SSL=0` отключает проверку сертификата (не рекомендуется для продуктивного окружения).
+
+3. При необходимости добавьте другие переменные из `src/config.py`.
 
 ## Локальный запуск (без Docker)
 
