@@ -53,24 +53,14 @@ class GoszakupkiHttpProvider(SourceProvider):
             except Exception:  # pragma: no cover - extremely unlikely
                 LOGGER.warning("Failed to load certifi CA bundle, using system defaults")
             if self._config.http_ca_bundle:
-                try:
-                    ssl_context.load_verify_locations(cafile=str(self._config.http_ca_bundle))
-                except Exception as exc:  # pragma: no cover - logged for visibility
-                    LOGGER.warning(
-                        "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(self._config.http_ca_bundle)}
-                    )
+                self._load_extra_ca(ssl_context)
         else:
             LOGGER.warning(
                 "TLS certificate verification disabled for provider", extra={"source_id": self.source_id}
             )
             if self._config.http_ca_bundle:
                 ssl_context = ssl.create_default_context()
-                try:
-                    ssl_context.load_verify_locations(cafile=str(self._config.http_ca_bundle))
-                except Exception as exc:
-                    LOGGER.warning(
-                        "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(self._config.http_ca_bundle)}
-                    )
+                self._load_extra_ca(ssl_context)
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
             else:
@@ -111,6 +101,29 @@ class GoszakupkiHttpProvider(SourceProvider):
         if self._session is None:  # pragma: no cover
             raise RuntimeError("HTTP session is not initialized")
         return self._session
+
+    def _load_extra_ca(self, ssl_context: ssl.SSLContext) -> None:
+        ca_path = self._config.http_ca_bundle
+        if ca_path is None:
+            return
+        try:
+            path_str = str(ca_path)
+            if ca_path.is_dir():
+                ssl_context.load_verify_locations(capath=path_str)
+            else:
+                ssl_context.load_verify_locations(cafile=path_str)
+        except FileNotFoundError as exc:
+            LOGGER.warning(
+                "Custom CA bundle not found", exc_info=exc, extra={"ca_bundle": path_str}
+            )
+        except IsADirectoryError as exc:
+            LOGGER.warning(
+                "Custom CA bundle is a directory but not accessible", exc_info=exc, extra={"ca_bundle": path_str}
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning(
+                "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": path_str}
+            )
 
     async def _request(self, session: aiohttp.ClientSession, url: str) -> str:
         attempt = 0
