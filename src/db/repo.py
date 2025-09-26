@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -152,6 +153,8 @@ class Repository:
                 status=status,
                 deadline=deadline,
                 price=price,
+                detail_scan_pending=True,
+                detail_loaded=False,
             )
             session.add(detection)
             try:
@@ -160,6 +163,90 @@ class Repository:
             except IntegrityError:
                 await session.rollback()
                 return False
+
+    # --- Детальный скан: выборка и отметки ---
+
+    @dataclass(slots=True)
+    class PendingDetail:
+        id: int
+        source_id: str
+        external_id: str
+        url: str
+        title: str | None
+        retry_count: int
+        next_retry_at: datetime | None
+
+    async def list_pending_detail(self, *, limit: int = 50) -> list["Repository.PendingDetail"]:
+        async with self._session_factory() as session:
+            now = datetime.utcnow()
+            stmt = (
+                select(
+                    Detection.id,
+                    Detection.source_id,
+                    Detection.external_id,
+                    Detection.url,
+                    Detection.title,
+                    Detection.detail_retry_count,
+                    Detection.detail_next_retry_at,
+                )
+                .where(
+                    Detection.detail_scan_pending.is_(True),
+                    or_(Detection.detail_next_retry_at.is_(None), Detection.detail_next_retry_at <= now),
+                )
+                .limit(limit)
+            )
+            rows = (await session.execute(stmt)).all()
+            return [Repository.PendingDetail(*row) for row in rows]
+
+    async def get_next_pending_detail(self) -> "Repository.PendingDetail | None":
+        async with self._session_factory() as session:
+            now = datetime.utcnow()
+            stmt = (
+                select(
+                    Detection.id,
+                    Detection.source_id,
+                    Detection.external_id,
+                    Detection.url,
+                    Detection.title,
+                    Detection.detail_retry_count,
+                    Detection.detail_next_retry_at,
+                )
+                .where(
+                    Detection.detail_scan_pending.is_(True),
+                    or_(Detection.detail_next_retry_at.is_(None), Detection.detail_next_retry_at <= now),
+                )
+                .order_by(Detection.detail_next_retry_at.is_(None).desc(), Detection.detail_next_retry_at.asc(), Detection.id.asc())
+                .limit(1)
+            )
+            row = (await session.execute(stmt)).first()
+            return Repository.PendingDetail(*row) if row else None
+
+    async def mark_detail_loaded(self, detection_id: int, success: bool) -> None:
+        async with self._session_factory() as session:
+            det = await session.get(Detection, detection_id)
+            if det is None:
+                return
+            det.detail_loaded = bool(success)
+            await session.commit()
+
+    async def complete_detail_scan(self, detection_id: int) -> None:
+        async with self._session_factory() as session:
+            det = await session.get(Detection, detection_id)
+            if det is None:
+                return
+            det.detail_scan_pending = False
+            det.detail_scanned_at = datetime.utcnow()
+            await session.commit()
+
+    async def schedule_detail_retry(self, detection_id: int, next_retry_at: datetime) -> int:
+        async with self._session_factory() as session:
+            det = await session.get(Detection, detection_id)
+            if det is None:
+                return 0
+            det.detail_retry_count = (getattr(det, "detail_retry_count", 0) or 0) + 1
+            det.detail_next_retry_at = next_retry_at
+            await session.commit()
+            return det.detail_retry_count
 
     async def has_notification(self, chat_id: int, source_id: str, external_id: str) -> bool:
         async with self._session_factory() as session:
@@ -189,6 +276,19 @@ class Repository:
             raise ValueError(f"Chat {chat_id} is not registered")
         return settings
 
+    # --- Статистика детскана ---
+    async def count_pending_detail(self) -> int:
+        async with self._session_factory() as session:
+            now = datetime.utcnow()
+            stmt = (
+                select(func.count(Detection.id))
+                .where(
+                    Detection.detail_scan_pending.is_(True),
+                    or_(Detection.detail_next_retry_at.is_(None), Detection.detail_next_retry_at <= now),
+                )
+            )
+            return int(await session.scalar(stmt) or 0)
+
 
 def _split_keywords(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
@@ -210,6 +310,16 @@ async def init_db(engine: AsyncEngine) -> None:
                 alters.append("ALTER TABLE detections ADD COLUMN deadline VARCHAR(64)")
             if "price" not in cols:
                 alters.append("ALTER TABLE detections ADD COLUMN price VARCHAR(128)")
+            if "detail_scan_pending" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN detail_scan_pending BOOLEAN NOT NULL DEFAULT 1")
+            if "detail_loaded" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN detail_loaded BOOLEAN NOT NULL DEFAULT 0")
+            if "detail_scanned_at" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN detail_scanned_at DATETIME NULL")
+            if "detail_retry_count" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN detail_retry_count INTEGER NOT NULL DEFAULT 0")
+            if "detail_next_retry_at" not in cols:
+                alters.append("ALTER TABLE detections ADD COLUMN detail_next_retry_at DATETIME NULL")
             for sql in alters:
                 await conn.exec_driver_sql(sql)
         except Exception:

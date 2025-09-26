@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from .config import AppConfig
 from .db.repo import Repository, init_db
 from .monitor.scheduler import MonitorScheduler
+from .monitor.detail_service import DetailScanService
+from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
@@ -33,6 +35,18 @@ class Container:
         )
         self.scheduler = MonitorScheduler(
             service=self.monitor_service,
+            repository=self.repository,
+            provider_config=config.provider,
+            logging_config=config.logging,
+        )
+        self.detail_service = DetailScanService(
+            provider=self.provider,
+            repository=self.repository,
+            bot=self.bot,
+            provider_config=config.provider,
+        )
+        self.detail_scheduler = DetailScanScheduler(
+            service=self.detail_service,
             repository=self.repository,
             provider_config=config.provider,
             logging_config=config.logging,

@@ -61,17 +61,39 @@ class HttpSelectorsConfig:
 
 
 @dataclass(slots=True)
+class HttpDetailSelectorsConfig:
+    # Основной контейнер подробной страницы (CSS). Если пусто — используем fallback‑список в провайдере
+    main: Optional[str] = None
+    # Селекторы для текстовых блоков внутри main; если заданы, собираем текст только из них и объединяем
+    text_selectors: list[str] = field(default_factory=list)
+    # Селекторы элементов, которые нужно удалить перед извлечением текста (например, меню, кнопки)
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ProviderConfig:
     source_id: str
     base_url: str
     pages_default: int
     check_interval_default: int
+    detail_check_interval_seconds: int
     http_timeout_seconds: int
     http_concurrency: int
     rate_limit_rps: float
     selectors: HttpSelectorsConfig
+    detail_selectors: HttpDetailSelectorsConfig = field(default_factory=HttpDetailSelectorsConfig)
+    prefer_table: bool = False
+    # Секция детального сканирования
+    @dataclass(slots=True)
+    class DetailScanConfig:
+        interval_seconds: int = 60
+        max_retries: int = 5
+        backoff_base_seconds: int = 60
+        backoff_factor: float = 2.0
+        backoff_max_seconds: int = 3600
+
+    detail: "ProviderConfig.DetailScanConfig" = field(default_factory=lambda: ProviderConfig.DetailScanConfig())
     use_playwright: bool = False
-    http_ca_bundle: Optional[Path] = None
     http_verify_ssl: bool = True
 
 
@@ -105,21 +127,47 @@ def load_config() -> AppConfig:
         id_from_href=_get_bool("GZ_ID_FROM_HREF", False),
     )
 
-    ca_bundle_raw = os.getenv("HTTP_CA_BUNDLE")
-    http_ca_bundle = Path(ca_bundle_raw).expanduser() if ca_bundle_raw else None
+    # Детальные селекторы
+    def _split_csv(name: str) -> list[str]:
+        raw = os.getenv(name)
+        if not raw:
+            return []
+        return [seg.strip() for seg in raw.split(",") if seg.strip()]
+
+    detail_selectors = HttpDetailSelectorsConfig(
+        main=os.getenv("GZ_DETAIL_MAIN") or None,
+        text_selectors=_split_csv("GZ_DETAIL_TEXT_SELECTORS"),
+        exclude=_split_csv("GZ_DETAIL_EXCLUDE"),
+    )
+
+    # Детскан: интервал берём из нового ENV, либо из старого (для обратной совместимости)
+    detail_interval = _get_int("DETAIL_INTERVAL_SECONDS", _get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60))
+    detail_max_retries = _get_int("DETAIL_MAX_RETRIES", 5)
+    detail_backoff_base = _get_int("DETAIL_BACKOFF_BASE_SECONDS", 60)
+    detail_backoff_factor = _get_float("DETAIL_BACKOFF_FACTOR", 2.0)
+    detail_backoff_max = _get_int("DETAIL_BACKOFF_MAX_SECONDS", 3600)
 
     provider_config = ProviderConfig(
         source_id=os.getenv("SOURCE_ID", "goszakupki.by"),
         base_url=os.getenv("SOURCE_BASE_URL", "https://goszakupki.by/tenders/posted"),
         pages_default=_get_int("SOURCE_PAGES_DEFAULT", 2),
         check_interval_default=_get_int("CHECK_INTERVAL_DEFAULT", 300),
+        detail_check_interval_seconds=_get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60),
         http_timeout_seconds=_get_int("HTTP_TIMEOUT_SECONDS", 10),
         http_concurrency=_get_int("HTTP_CONCURRENCY", 3),
         rate_limit_rps=_get_float("RATE_LIMIT_RPS", 2.0),
         selectors=selectors,
+        detail_selectors=detail_selectors,
+        detail=ProviderConfig.DetailScanConfig(
+            interval_seconds=detail_interval,
+            max_retries=detail_max_retries,
+            backoff_base_seconds=detail_backoff_base,
+            backoff_factor=detail_backoff_factor,
+            backoff_max_seconds=detail_backoff_max,
+        ),
         use_playwright=_get_bool("USE_PLAYWRIGHT", False),
-        http_ca_bundle=http_ca_bundle,
         http_verify_ssl=_get_bool("HTTP_VERIFY_SSL", True),
+        prefer_table=_get_bool("GZ_PREFER_TABLE", True),
     )
 
     return AppConfig(

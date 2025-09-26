@@ -8,16 +8,16 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import LoggingConfig, ProviderConfig
 from ..db.repo import Repository
-from .service import MonitorService
+from .detail_service import DetailScanService
 
 LOGGER = logging.getLogger(__name__)
 
 
-class MonitorScheduler:
+class DetailScanScheduler:
     def __init__(
         self,
         *,
-        service: MonitorService,
+        service: DetailScanService,
         repository: Repository,
         provider_config: ProviderConfig,
         logging_config: LoggingConfig,
@@ -36,26 +36,23 @@ class MonitorScheduler:
         self._scheduler.shutdown(wait=False)
 
     async def refresh_schedule(self) -> None:
-        # Если нет включённых чатов — останавливаем задачу полностью
+        # Останавливаем детсканер, если нет включённых чатов
         prefs = await self._repo.list_enabled_preferences()
         if not prefs:
             if self._job is not None:
                 self._job.remove()
                 self._job = None
-                LOGGER.info("Monitor job stopped: no enabled chats")
+                LOGGER.info("Detail scan job stopped: no enabled chats")
             return
         interval = await self._determine_interval()
         trigger = IntervalTrigger(seconds=interval, start_date=datetime.now(self._scheduler.timezone))
         if self._job is None:
-            self._job = self._scheduler.add_job(self._service.run_check, trigger=trigger)
-            LOGGER.info("Monitor job scheduled", extra={"interval": interval})
+            self._job = self._scheduler.add_job(self._service.run_scan, trigger=trigger)
+            LOGGER.info("Detail scan job scheduled", extra={"interval": interval})
         else:
             self._job.reschedule(trigger=trigger)
-            LOGGER.info("Monitor job rescheduled", extra={"interval": interval})
+            LOGGER.info("Detail scan job rescheduled", extra={"interval": interval})
 
     async def _determine_interval(self) -> int:
-        prefs = await self._repo.list_enabled_preferences()
-        intervals = [pref.interval_seconds for pref in prefs if pref.interval_seconds > 0]
-        if intervals:
-            return min(intervals)
-        return max(self._provider_config.check_interval_default, 60)
+        # Жёстко используем значение из конфигурации, минимум 1 сек.
+        return max(self._provider_config.detail.interval_seconds, 1)

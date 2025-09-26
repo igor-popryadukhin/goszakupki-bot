@@ -5,12 +5,10 @@ import logging
 import re
 import time
 import ssl
-from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlencode
 
 import aiohttp
-import certifi
 from bs4 import BeautifulSoup
 
 from ..config import ProviderConfig
@@ -46,26 +44,11 @@ class GoszakupkiHttpProvider(SourceProvider):
             "Accept-Language": "ru-RU,ru;q=0.9",
             "Accept": "text/html",
         }
-        ssl_context: ssl.SSLContext | bool
-        if self._config.http_verify_ssl:
-            ssl_context = ssl.create_default_context()
-            try:
-                ssl_context.load_verify_locations(cafile=certifi.where())
-            except Exception:  # pragma: no cover - extremely unlikely
-                LOGGER.warning("Failed to load certifi CA bundle, using system defaults")
-            if self._config.http_ca_bundle:
-                self._load_extra_ca(ssl_context)
-        else:
-            LOGGER.warning(
-                "TLS certificate verification disabled for provider", extra={"source_id": self.source_id}
-            )
-            if self._config.http_ca_bundle:
-                ssl_context = ssl.create_default_context()
-                self._load_extra_ca(ssl_context)
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-            else:
-                ssl_context = False
+        # Всегда отключаем проверку сертификата (по требованию)
+        LOGGER.warning(
+            "TLS certificate verification disabled for provider (forced)", extra={"source_id": self.source_id}
+        )
+        ssl_context: ssl.SSLContext | bool = False
 
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         self._session = aiohttp.ClientSession(timeout=timeout, headers=headers, connector=connector)
@@ -96,6 +79,20 @@ class GoszakupkiHttpProvider(SourceProvider):
             return []
         return self._parse_listings(html)
 
+    async def fetch_detail_text(self, url: str) -> str:
+        session = await self._ensure_session()
+        LOGGER.debug("Fetching detail page", extra={"url": url})
+        html = await self._request(session, url)
+        if not html:
+            return ""
+        # Упрощённый способ: ищем по всему документу без селекторов
+        try:
+            soup = BeautifulSoup(html, "lxml")
+            return soup.get_text(" ", strip=True)
+        except Exception:  # pragma: no cover - устойчивость к кривой верстке
+            LOGGER.exception("Failed to parse detail page", extra={"url": url})
+            return ""
+
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None:
             await self.startup()
@@ -103,59 +100,7 @@ class GoszakupkiHttpProvider(SourceProvider):
             raise RuntimeError("HTTP session is not initialized")
         return self._session
 
-    def _load_extra_ca(self, ssl_context: ssl.SSLContext) -> None:
-        ca_path = self._config.http_ca_bundle
-        if ca_path is None:
-            return
-        try:
-            if ca_path.is_dir():
-                self._load_ca_directory(ssl_context, ca_path)
-            else:
-                ssl_context.load_verify_locations(cafile=str(ca_path))
-        except FileNotFoundError as exc:
-            LOGGER.warning(
-                "Custom CA bundle not found", exc_info=exc, extra={"ca_bundle": str(ca_path)}
-            )
-        except IsADirectoryError as exc:
-            LOGGER.warning(
-                "Custom CA bundle is a directory but not accessible", exc_info=exc, extra={"ca_bundle": str(ca_path)}
-            )
-        except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning(
-                "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(ca_path)}
-            )
-
-    def _load_ca_directory(self, ssl_context: ssl.SSLContext, directory: Path) -> None:
-        loaded = 0
-        errors: list[tuple[Path, Exception]] = []
-        try:
-            entries = sorted(directory.iterdir())
-        except Exception as exc:  # pragma: no cover - defensive logging
-            LOGGER.warning(
-                "Failed to read custom CA directory",
-                exc_info=exc,
-                extra={"ca_bundle": str(directory)},
-            )
-            return
-        for entry in entries:
-            if not entry.is_file():
-                continue
-            try:
-                ssl_context.load_verify_locations(cafile=str(entry))
-                loaded += 1
-            except Exception as exc:  # pragma: no cover - defensive logging
-                errors.append((entry, exc))
-        if loaded == 0:
-            LOGGER.warning(
-                "No certificate files loaded from custom CA directory",
-                extra={"ca_bundle": str(directory)},
-            )
-        for entry, exc in errors:
-            LOGGER.warning(
-                "Failed to load certificate from custom CA directory entry",
-                exc_info=exc,
-                extra={"ca_bundle": str(entry)},
-            )
+    
 
     async def _request(self, session: aiohttp.ClientSession, url: str) -> str:
         attempt = 0
@@ -197,57 +142,59 @@ class GoszakupkiHttpProvider(SourceProvider):
 
     def _parse_listings(self, html: str) -> list[Listing]:
         soup = BeautifulSoup(html, "lxml")
-        items = soup.select(self._config.selectors.list_item)
-        total_items = len(items)
-        listings: list[Listing] = []
-        skipped_no_link = 0
-        skipped_no_href = 0
-        skipped_no_id = 0
-        for item in items:
-            link_el = item.select_one(self._config.selectors.link)
-            if not link_el:
-                skipped_no_link += 1
-                continue
-            if not link_el.has_attr("href"):
-                skipped_no_href += 1
-                continue
-            href = link_el.get("href", "").strip()
-            url = urljoin(self._config.base_url, href)
-            title_el = item.select_one(self._config.selectors.title)
-            title = title_el.get_text(strip=True) if title_el else None
-            external_id = self._extract_id(item, link_el.get("href", ""))
-            if not external_id:
-                skipped_no_id += 1
-                continue
-            listings.append(Listing(external_id=external_id, title=title or None, url=url))
+        # Если включён приоритет таблицы — сразу пытаемся разобрать таблицу
+        if not self._config.prefer_table:
+            items = soup.select(self._config.selectors.list_item)
+            total_items = len(items)
+            listings: list[Listing] = []
+            skipped_no_link = 0
+            skipped_no_href = 0
+            skipped_no_id = 0
+            for item in items:
+                link_el = item.select_one(self._config.selectors.link)
+                if not link_el:
+                    skipped_no_link += 1
+                    continue
+                if not link_el.has_attr("href"):
+                    skipped_no_href += 1
+                    continue
+                href = link_el.get("href", "").strip()
+                url = urljoin(self._config.base_url, href)
+                title_el = item.select_one(self._config.selectors.title)
+                title = title_el.get_text(strip=True) if title_el else None
+                external_id = self._extract_id(item, link_el.get("href", ""))
+                if not external_id:
+                    skipped_no_id += 1
+                    continue
+                listings.append(Listing(external_id=external_id, title=title or None, url=url))
 
-        if listings:
-            LOGGER.debug(
-                "Parsed listings via CSS selectors",
-                extra={
-                    "found_items": total_items,
-                    "parsed": len(listings),
-                    "skipped_no_link": skipped_no_link,
-                    "skipped_no_href": skipped_no_href,
-                    "skipped_no_id": skipped_no_id,
-                    "list_item_selector": self._config.selectors.list_item,
-                    "title_selector": self._config.selectors.title,
-                    "link_selector": self._config.selectors.link,
-                },
-            )
-            return listings
-        else:
-            LOGGER.info(
-                "No listings found by CSS selectors; trying table fallback",
-                extra={
-                    "found_items": total_items,
-                    "list_item_selector": self._config.selectors.list_item,
-                    "title_selector": self._config.selectors.title,
-                    "link_selector": self._config.selectors.link,
-                },
-            )
+            if listings:
+                LOGGER.debug(
+                    "Parsed listings via CSS selectors",
+                    extra={
+                        "found_items": total_items,
+                        "parsed": len(listings),
+                        "skipped_no_link": skipped_no_link,
+                        "skipped_no_href": skipped_no_href,
+                        "skipped_no_id": skipped_no_id,
+                        "list_item_selector": self._config.selectors.list_item,
+                        "title_selector": self._config.selectors.title,
+                        "link_selector": self._config.selectors.link,
+                    },
+                )
+                return listings
+            else:
+                LOGGER.info(
+                    "No listings found by CSS selectors; trying table fallback",
+                    extra={
+                        "found_items": total_items,
+                        "list_item_selector": self._config.selectors.list_item,
+                        "title_selector": self._config.selectors.title,
+                        "link_selector": self._config.selectors.link,
+                    },
+                )
 
-        # 2) Фолбэк: таблица с id=w0 -> w0/table/tbody/tr (CSS)
+        # Таблица с id=w0 -> w0/table/tbody/tr (CSS)
         table_wrapper = soup.select_one("#w0")
         if table_wrapper is None:
             LOGGER.info("Table wrapper #w0 not found")

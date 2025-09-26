@@ -49,6 +49,12 @@ class Detection(Base):
     deadline: Mapped[str | None] = mapped_column(String(64), nullable=True)
     price: Mapped[str | None] = mapped_column(String(128), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # Детальный скан: план/результат
+    detail_scan_pending: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    detail_loaded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    detail_scanned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    detail_retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    detail_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Notification(Base):

@@ -22,7 +22,13 @@ async def main() -> None:
     if hasattr(container.provider, "startup"):
         await getattr(container.provider, "startup")()
 
-    router = create_router(container.repository, container.scheduler, config.provider)
+    router = create_router(
+        container.repository,
+        container.scheduler,
+        container.detail_scheduler,
+        container.detail_service,
+        config.provider,
+    )
     dispatcher: Dispatcher = container.dispatcher
     dispatcher.include_router(router)
 
@@ -42,11 +48,13 @@ async def main() -> None:
         except Exception:  # pragma: no cover
             LOGGER.exception("Failed to close dispatcher storage")
         await container.scheduler.shutdown()
+        await container.detail_scheduler.shutdown()
         await container.shutdown()
 
     setup_signal_handlers(shutdown)
 
     await container.scheduler.start()
+    await container.detail_scheduler.start()
 
     try:
         await dispatcher.start_polling(container.bot)
