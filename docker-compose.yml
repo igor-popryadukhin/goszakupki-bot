@@ -11,6 +11,7 @@ services:
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}
       HTTP_CONCURRENCY: ${HTTP_CONCURRENCY:-3}
       RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-2}
+      HTTP_VERIFY_SSL: ${HTTP_VERIFY_SSL:-0}
       DB_PATH: /data/app.db
       TZ: Europe/Helsinki
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}

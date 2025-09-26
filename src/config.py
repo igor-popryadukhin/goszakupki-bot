@@ -71,6 +71,8 @@ class ProviderConfig:
     rate_limit_rps: float
     selectors: HttpSelectorsConfig
     use_playwright: bool = False
+    http_ca_bundle: Optional[Path] = None
+    http_verify_ssl: bool = True
 
 
 @dataclass(slots=True)
@@ -103,6 +105,9 @@ def load_config() -> AppConfig:
         id_from_href=_get_bool("GZ_ID_FROM_HREF", False),
     )
 
+    ca_bundle_raw = os.getenv("HTTP_CA_BUNDLE")
+    http_ca_bundle = Path(ca_bundle_raw).expanduser() if ca_bundle_raw else None
+
     provider_config = ProviderConfig(
         source_id=os.getenv("SOURCE_ID", "goszakupki.by"),
         base_url=os.getenv("SOURCE_BASE_URL", "https://goszakupki.by/tenders/posted"),
@@ -113,6 +118,8 @@ def load_config() -> AppConfig:
         rate_limit_rps=_get_float("RATE_LIMIT_RPS", 2.0),
         selectors=selectors,
         use_playwright=_get_bool("USE_PLAYWRIGHT", False),
+        http_ca_bundle=http_ca_bundle,
+        http_verify_ssl=_get_bool("HTTP_VERIFY_SSL", True),
     )
 
     return AppConfig(
