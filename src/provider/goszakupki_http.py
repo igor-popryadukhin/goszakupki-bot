@@ -5,6 +5,7 @@ import logging
 import re
 import time
 import ssl
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlencode
 
@@ -107,22 +108,53 @@ class GoszakupkiHttpProvider(SourceProvider):
         if ca_path is None:
             return
         try:
-            path_str = str(ca_path)
             if ca_path.is_dir():
-                ssl_context.load_verify_locations(capath=path_str)
+                self._load_ca_directory(ssl_context, ca_path)
             else:
-                ssl_context.load_verify_locations(cafile=path_str)
+                ssl_context.load_verify_locations(cafile=str(ca_path))
         except FileNotFoundError as exc:
             LOGGER.warning(
-                "Custom CA bundle not found", exc_info=exc, extra={"ca_bundle": path_str}
+                "Custom CA bundle not found", exc_info=exc, extra={"ca_bundle": str(ca_path)}
             )
         except IsADirectoryError as exc:
             LOGGER.warning(
-                "Custom CA bundle is a directory but not accessible", exc_info=exc, extra={"ca_bundle": path_str}
+                "Custom CA bundle is a directory but not accessible", exc_info=exc, extra={"ca_bundle": str(ca_path)}
             )
         except Exception as exc:  # pragma: no cover - defensive logging
             LOGGER.warning(
-                "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": path_str}
+                "Failed to load custom CA bundle", exc_info=exc, extra={"ca_bundle": str(ca_path)}
+            )
+
+    def _load_ca_directory(self, ssl_context: ssl.SSLContext, directory: Path) -> None:
+        loaded = 0
+        errors: list[tuple[Path, Exception]] = []
+        try:
+            entries = sorted(directory.iterdir())
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning(
+                "Failed to read custom CA directory",
+                exc_info=exc,
+                extra={"ca_bundle": str(directory)},
+            )
+            return
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            try:
+                ssl_context.load_verify_locations(cafile=str(entry))
+                loaded += 1
+            except Exception as exc:  # pragma: no cover - defensive logging
+                errors.append((entry, exc))
+        if loaded == 0:
+            LOGGER.warning(
+                "No certificate files loaded from custom CA directory",
+                extra={"ca_bundle": str(directory)},
+            )
+        for entry, exc in errors:
+            LOGGER.warning(
+                "Failed to load certificate from custom CA directory entry",
+                exc_info=exc,
+                extra={"ca_bundle": str(entry)},
             )
 
     async def _request(self, session: aiohttp.ClientSession, url: str) -> str:
