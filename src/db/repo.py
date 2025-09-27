@@ -237,6 +237,16 @@ class Repository:
             )
             return (await session.scalar(stmt)) is not None
 
+    async def has_notification_global_sent(self, source_id: str, external_id: str) -> bool:
+        async with self._session_factory() as session:
+            stmt = select(Notification.id).where(
+                Notification.chat_id == 0,
+                Notification.source_id == source_id,
+                Notification.external_id == external_id,
+                Notification.sent.is_(True),
+            )
+            return (await session.scalar(stmt)) is not None
+
     async def create_notification_global(self, source_id: str, external_id: str, *, sent: bool) -> None:
         async with self._session_factory() as session:
             session.add(Notification(chat_id=0, source_id=source_id, external_id=external_id, sent=bool(sent)))

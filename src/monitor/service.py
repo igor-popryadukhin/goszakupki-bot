@@ -113,7 +113,7 @@ class MonitorService:
             )
             return 0
         # Global dedupe
-        if await self._repo.has_notification_global(self._config.source_id, listing.external_id):
+        if await self._repo.has_notification_global_sent(self._config.source_id, listing.external_id):
             LOGGER.debug("Skip: already notified globally", extra={"id": listing.external_id})
             return 0
         text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
