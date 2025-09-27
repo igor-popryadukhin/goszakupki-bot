@@ -22,12 +22,14 @@ class DetailScanService:
         repository: Repository,
         bot: Bot,
         provider_config: ProviderConfig,
+        auth_state: "AuthState",
     ) -> None:
         self._provider = provider
         self._repo = repository
         self._bot = bot
         self._config = provider_config
         self._lock = asyncio.Lock()
+        self._auth_state = auth_state
 
     async def run_scan(self) -> None:
         async with self._lock:
@@ -78,8 +80,8 @@ class DetailScanService:
             matched = find_matching_keywords(text, keywords)
             if matched and not await self._repo.has_notification_global(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
-                targets = await self._repo.list_authorized_chat_ids()
-                for chat_id in targets:
+                chat_id = self._auth_state.authorized_target()
+                if chat_id is not None:
                     try:
                         await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
                         notified += 1

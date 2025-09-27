@@ -22,12 +22,14 @@ class MonitorService:
         repository: Repository,
         bot: Bot,
         provider_config: ProviderConfig,
+        auth_state: "AuthState",
     ) -> None:
         self._provider = provider
         self._repo = repository
         self._bot = bot
         self._config = provider_config
         self._lock = asyncio.Lock()
+        self._auth_state = auth_state
 
     async def run_check(self) -> None:
         async with self._lock:
@@ -108,13 +110,14 @@ class MonitorService:
         if await self._repo.has_notification_global(self._config.source_id, listing.external_id):
             return 0
         text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
-        targets = await self._repo.list_authorized_chat_ids()
-        for chat_id in targets:
-            try:
-                await self._bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=False)
-                sent += 1
-            except Exception:
-                LOGGER.exception("Failed to send notification", extra={"chat_id": chat_id})
+        target = self._auth_state.authorized_target()
+        if target is None:
+            return 0
+        try:
+            await self._bot.send_message(chat_id=target, text=text, disable_web_page_preview=False)
+            sent = 1
+        except Exception:
+            LOGGER.exception("Failed to send notification", extra={"chat_id": target})
         if sent > 0:
             await self._repo.create_notification_global(self._config.source_id, listing.external_id, sent=True)
         return sent

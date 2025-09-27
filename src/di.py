@@ -14,6 +14,7 @@ from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
 from .tg.bot import create_bot, create_dispatcher
+from .tg.auth_state import AuthState
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,11 +28,13 @@ class Container:
         self.bot: Bot = create_bot(config.telegram.token)
         self.dispatcher: Dispatcher = create_dispatcher()
         self.provider: SourceProvider = self._create_provider()
+        self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "")
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
             bot=self.bot,
             provider_config=config.provider,
+            auth_state=self.auth_state,
         )
         self.scheduler = MonitorScheduler(
             service=self.monitor_service,
@@ -44,6 +47,7 @@ class Container:
             repository=self.repository,
             bot=self.bot,
             provider_config=config.provider,
+            auth_state=self.auth_state,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,

@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, ChatSettings, Detection, Notification, User, AuthorizedChat, AppSettings
+from .models import Base, ChatSettings, Detection, Notification, User, AppSettings
 
 
 @dataclass(slots=True)
@@ -280,24 +280,9 @@ class Repository:
                 await session.rollback()
             return created
 
-    # --- Авторизация чатов ---
+    # Authorization persistence removed; handled in-memory for this session
 
-    async def is_authorized(self, chat_id: int) -> bool:
-        async with self._session_factory() as session:
-            stmt = select(AuthorizedChat.id).where(AuthorizedChat.chat_id == chat_id)
-            return (await session.scalar(stmt)) is not None
-
-    async def authorize_chat(self, chat_id: int) -> None:
-        async with self._session_factory() as session:
-            row = await session.scalar(select(AuthorizedChat).where(AuthorizedChat.chat_id == chat_id))
-            if row is None:
-                session.add(AuthorizedChat(chat_id=chat_id))
-            await session.commit()
-
-    async def list_authorized_chat_ids(self) -> list[int]:
-        async with self._session_factory() as session:
-            ids = (await session.execute(select(AuthorizedChat.chat_id))).scalars().all()
-            return list(ids)
+    # No persistent list of authorized chats in DB
 
     # --- Статистика детскана ---
     async def count_pending_detail(self) -> int:
@@ -362,40 +347,5 @@ def _split_keywords(text: str) -> list[str]:
 
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
+        # Create tables for current models; no ad-hoc migrations
         await conn.run_sync(Base.metadata.create_all)
-        # SQLite: добавить недостающие колонки без миграций
-        # detections
-        try:
-            result = await conn.exec_driver_sql("PRAGMA table_info('detections')")
-            cols = {row[1] for row in result}
-            alters: list[str] = []
-            if "procedure_type" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN procedure_type TEXT")
-            if "status" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN status TEXT")
-            if "deadline" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN deadline VARCHAR(64)")
-            if "price" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN price VARCHAR(128)")
-            if "detail_scan_pending" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN detail_scan_pending BOOLEAN NOT NULL DEFAULT 1")
-            if "detail_loaded" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN detail_loaded BOOLEAN NOT NULL DEFAULT 0")
-            if "detail_scanned_at" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN detail_scanned_at DATETIME NULL")
-            if "detail_retry_count" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN detail_retry_count INTEGER NOT NULL DEFAULT 0")
-            if "detail_next_retry_at" not in cols:
-                alters.append("ALTER TABLE detections ADD COLUMN detail_next_retry_at DATETIME NULL")
-            for sql in alters:
-                await conn.exec_driver_sql(sql)
-        except Exception:
-            pass
-        # notifications
-        try:
-            result = await conn.exec_driver_sql("PRAGMA table_info('notifications')")
-            ncols = {row[1] for row in result}
-            if "sent" not in ncols:
-                await conn.exec_driver_sql("ALTER TABLE notifications ADD COLUMN sent BOOLEAN NOT NULL DEFAULT 0")
-        except Exception:
-            pass

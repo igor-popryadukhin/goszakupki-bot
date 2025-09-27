@@ -7,7 +7,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
 from ..config import AppConfig
-from ..db.repo import Repository
+from .auth_state import AuthState
 
 
 class AuthMiddleware(BaseMiddleware):
@@ -15,10 +15,10 @@ class AuthMiddleware(BaseMiddleware):
     and chat is not authorized.
     """
 
-    def __init__(self, repo: Repository, auth: AppConfig.AuthConfig) -> None:
+    def __init__(self, auth: AppConfig.AuthConfig, state: AuthState) -> None:
         super().__init__()
-        self._repo = repo
         self._auth = auth
+        self._state = state
 
     async def __call__(
         self,
@@ -57,7 +57,7 @@ class AuthMiddleware(BaseMiddleware):
         if chat_id is None:
             return await handler(event, data)
 
-        if await self._repo.is_authorized(chat_id):
+        if self._state.is_authorized(chat_id):
             return await handler(event, data)
 
         if isinstance(event, Message):

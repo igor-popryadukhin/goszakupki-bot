@@ -13,6 +13,7 @@ from aiogram.filters import StateFilter
 
 from ..config import ProviderConfig, AppConfig
 from ..db.repo import Repository, AppPreferences
+from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
@@ -40,6 +41,7 @@ def create_router(
     detail_service: DetailScanService,
     provider_config: ProviderConfig,
     auth: AppConfig.AuthConfig,
+    auth_state: AuthState,
 ) -> Router:
     router = Router()
 
@@ -47,7 +49,7 @@ def create_router(
     async def command_start(message: Message, state: FSMContext) -> None:
         await state.clear()
         # Не создаём пользователя до авторизации
-        if not (await repo.is_authorized(message.chat.id)):
+        if not auth_state.is_authorized(message.chat.id):
             await message.answer(
                 dedent(
                     """
@@ -116,8 +118,7 @@ def create_router(
             parts = args.split()
             if len(parts) >= 2:
                 login, password = parts[0], " ".join(parts[1:])
-                if login == auth.login and password == auth.password:
-                    await repo.authorize_chat(message.chat.id)
+                if auth_state.try_login(message.chat.id, login, password):
                     await state.clear()
                     await message.answer("Успешная авторизация. Отправьте /start.")
                 else:
@@ -141,8 +142,7 @@ def create_router(
         data = await state.get_data()
         login = str(data.get("login") or "")
         password = (message.text or "").strip()
-        if login == (auth.login or "") and password == (auth.password or ""):
-            await repo.authorize_chat(message.chat.id)
+        if auth_state.try_login(message.chat.id, login, password):
             await state.clear()
             await message.answer("Успешная авторизация. Отправьте /start.")
         else:

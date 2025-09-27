@@ -10,6 +10,7 @@ from .di import Container
 from .logging_config import configure_logging
 from .tg.handlers import create_router
 from .tg.auth_middleware import AuthMiddleware
+from .tg.auth_state import AuthState
 from .util.signals import setup_signal_handlers
 
 LOGGER = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ async def main() -> None:
     if hasattr(container.provider, "startup"):
         await getattr(container.provider, "startup")()
 
+    auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "")
+
     router = create_router(
         container.repository,
         container.scheduler,
@@ -30,11 +33,12 @@ async def main() -> None:
         container.detail_service,
         config.provider,
         config.auth,
+        auth_state,
     )
     dispatcher: Dispatcher = container.dispatcher
-    # Глобальная проверка авторизации (если включена)
-    dispatcher.message.outer_middleware(AuthMiddleware(container.repository, config.auth))
-    dispatcher.callback_query.outer_middleware(AuthMiddleware(container.repository, config.auth))
+    # Глобальная проверка авторизации
+    dispatcher.message.outer_middleware(AuthMiddleware(config.auth, auth_state))
+    dispatcher.callback_query.outer_middleware(AuthMiddleware(config.auth, auth_state))
     dispatcher.include_router(router)
 
     shutdown_called = False

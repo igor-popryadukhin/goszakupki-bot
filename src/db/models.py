@@ -81,9 +81,4 @@ class Notification(Base):
     sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
-class AuthorizedChat(Base):
-    __tablename__ = "authorized_chats"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    chat_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
-    authorized_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+# AuthorizedChat removed: authorization is kept in-memory per bot session
