@@ -76,8 +76,12 @@ class DetailScanService:
             return
 
         notified = 0
-        if text and prefs and prefs.enabled and keywords:
-            matched = find_matching_keywords(text, keywords)
+        if prefs and prefs.enabled and keywords:
+            matched = []
+            if text:
+                matched = find_matching_keywords(text, keywords)
+            if not matched and item.title:
+                matched = find_matching_keywords(item.title, keywords)
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
                 chat_id = self._auth_state.authorized_target()
