@@ -26,6 +26,10 @@ class AuthMiddleware(BaseMiddleware):
         event: Message | CallbackQuery,
         data: dict[str, Any],
     ) -> Any:
+        # If auth is not configured, allow everything
+        if not self._auth.enabled:
+            return await handler(event, data)
+
         # Authorization is mandatory: block everything until /login succeeds
         
         chat_id = None
