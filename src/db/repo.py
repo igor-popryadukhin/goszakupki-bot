@@ -260,7 +260,7 @@ class Repository:
 
     async def create_notification(self, chat_id: int, source_id: str, external_id: str) -> None:
         async with self._session_factory() as session:
-            session.add(Notification(chat_id=chat_id, source_id=source_id, external_id=external_id))
+            session.add(Notification(chat_id=chat_id, source_id=source_id, external_id=external_id, sent=True))
             try:
                 await session.commit()
             except IntegrityError:
@@ -368,7 +368,7 @@ class Repository:
 
     async def count_notifications_for_chat(self, chat_id: int, *, source_id: str | None = None, since: datetime | None = None) -> int:
         async with self._session_factory() as session:
-            stmt = select(func.count(Notification.id)).where(Notification.chat_id == chat_id)
+            stmt = select(func.count(Notification.id)).where(Notification.chat_id == chat_id, Notification.sent.is_(True))
             if source_id:
                 stmt = stmt.where(Notification.source_id == source_id)
             if since:
@@ -377,7 +377,7 @@ class Repository:
 
     async def last_notification_time_for_chat(self, chat_id: int, *, source_id: str | None = None) -> datetime | None:
         async with self._session_factory() as session:
-            stmt = select(func.max(Notification.notified_at)).where(Notification.chat_id == chat_id)
+            stmt = select(func.max(Notification.notified_at)).where(Notification.chat_id == chat_id, Notification.sent.is_(True))
             if source_id:
                 stmt = stmt.where(Notification.source_id == source_id)
             return await session.scalar(stmt)
@@ -415,6 +415,11 @@ async def init_db(engine: AsyncEngine) -> None:
                 alters.append("ALTER TABLE detections ADD COLUMN detail_next_retry_at DATETIME NULL")
             for sql in alters:
                 await conn.exec_driver_sql(sql)
+            # Ensure notifications table has 'sent' column
+            result = await conn.exec_driver_sql("PRAGMA table_info('notifications')")
+            ncols = {row[1] for row in result}
+            if "sent" not in ncols:
+                await conn.exec_driver_sql("ALTER TABLE notifications ADD COLUMN sent BOOLEAN NOT NULL DEFAULT 0")
         except Exception:
             # Безопасно игнорируем, если не SQLite или PRAGMA недоступен
             pass

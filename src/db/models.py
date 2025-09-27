@@ -66,6 +66,8 @@ class Notification(Base):
     source_id: Mapped[str] = mapped_column(String(64), nullable=False)
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
     notified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # Marks whether a message was actually sent to chat (True) or just seeded to suppress floods (False)
+    sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class AuthorizedChat(Base):
