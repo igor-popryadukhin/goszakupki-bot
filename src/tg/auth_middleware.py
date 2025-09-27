@@ -4,6 +4,7 @@ from typing import Any, Callable, Awaitable
 
 from aiogram import BaseMiddleware
 from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
 
 from ..config import AppConfig
 from ..db.repo import Repository
@@ -26,7 +27,7 @@ class AuthMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         # Authorization is mandatory: block everything until /login succeeds
-
+        
         chat_id = None
         text = ""
         if isinstance(event, Message):
@@ -39,11 +40,19 @@ class AuthMiddleware(BaseMiddleware):
 
         # Allow only auth-related commands before login
         if isinstance(event, Message):
+            # Allow login/help/start commands
             if text.startswith("/login") or text.startswith("/start") or text.startswith("/help"):
                 return await handler(event, data)
+            # Allow messages while in login wizard states
+            state: FSMContext | None = data.get("state")
+            if state is not None:
+                st = await state.get_state()
+                if st and "LoginForm" in st:
+                    return await handler(event, data)
         if isinstance(event, CallbackQuery):
             # Block all callbacks until authorized
-            pass
+            if text == "cancel_login":
+                return await handler(event, data)
 
         if chat_id is None:
             return await handler(event, data)

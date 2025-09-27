@@ -28,6 +28,11 @@ class KeywordsForm(StatesGroup):
     waiting_for_pages = State()
 
 
+class LoginForm(StatesGroup):
+    waiting_for_login = State()
+    waiting_for_password = State()
+
+
 def create_router(
     repo: Repository,
     monitor_scheduler: MonitorScheduler,
@@ -104,23 +109,53 @@ def create_router(
         )
 
     @router.message(Command("login"))
-    async def command_login(message: Message, command: CommandObject) -> None:
+    async def command_login(message: Message, state: FSMContext, command: CommandObject) -> None:
         args = (command.args or "").strip()
-        parts = args.split()
-        if len(parts) < 2:
-            await message.answer("Использование: /login <логин> <пароль>")
-            return
-        login, password = parts[0], " ".join(parts[1:])
         if not (auth.login and auth.password):
-            await message.answer(
-                "Авторизационные переменные не настроены. Задайте AUTH_LOGIN и AUTH_PASSWORD в окружении контейнера."
-            )
+            await message.answer("AUTH_LOGIN/AUTH_PASSWORD не настроены в окружении контейнера.")
             return
+        if args:
+            parts = args.split()
+            if len(parts) >= 2:
+                login, password = parts[0], " ".join(parts[1:])
+                if login == auth.login and password == auth.password:
+                    await repo.authorize_chat(message.chat.id)
+                    await state.clear()
+                    await message.answer("Успешная авторизация. Отправьте /start.")
+                else:
+                    await message.answer("Неверные учётные данные.")
+                return
+        # Wizard mode
+        await state.set_state(LoginForm.waiting_for_login)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="cancel_login")]])
+        await message.answer("Введите логин:", reply_markup=kb)
+
+    @router.message(StateFilter(LoginForm.waiting_for_login), F.text & ~F.text.startswith("/"))
+    async def login_receive_login(message: Message, state: FSMContext) -> None:
+        login = (message.text or "").strip()
+        await state.update_data(login=login)
+        await state.set_state(LoginForm.waiting_for_password)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="cancel_login")]])
+        await message.answer("Введите пароль:", reply_markup=kb)
+
+    @router.message(StateFilter(LoginForm.waiting_for_password), F.text & ~F.text.startswith("/"))
+    async def login_receive_password(message: Message, state: FSMContext) -> None:
+        data = await state.get_data()
+        login = str(data.get("login") or "")
+        password = (message.text or "").strip()
         if login == (auth.login or "") and password == (auth.password or ""):
             await repo.authorize_chat(message.chat.id)
-            await message.answer("Успешная авторизация. Отправьте /start для продолжения.")
+            await state.clear()
+            await message.answer("Успешная авторизация. Отправьте /start.")
         else:
-            await message.answer("Неверные учётные данные.")
+            await state.clear()
+            await message.answer("Неверные учётные данные. Повторите: /login")
+
+    @router.callback_query(F.data == "cancel_login")
+    async def login_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        await callback.message.answer("Авторизация отменена. Отправьте /login для повтора.")
+        await callback.answer()
 
     @router.message(Command("settings"))
     async def command_settings(message: Message) -> None:
