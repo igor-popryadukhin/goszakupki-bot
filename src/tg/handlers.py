@@ -118,7 +118,7 @@ def create_router(
             parts = args.split()
             if len(parts) >= 2:
                 login, password = parts[0], " ".join(parts[1:])
-                if auth_state.try_login(message.chat.id, login, password):
+                if await auth_state.try_login(message.chat.id, login, password):
                     await state.clear()
                     await message.answer("Успешная авторизация. Отправьте /start.")
                 else:
@@ -142,7 +142,7 @@ def create_router(
         data = await state.get_data()
         login = str(data.get("login") or "")
         password = (message.text or "").strip()
-        if auth_state.try_login(message.chat.id, login, password):
+        if await auth_state.try_login(message.chat.id, login, password):
             await state.clear()
             await message.answer("Успешная авторизация. Отправьте /start.")
         else:

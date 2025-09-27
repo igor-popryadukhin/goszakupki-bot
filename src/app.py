@@ -23,6 +23,9 @@ async def main() -> None:
     if hasattr(container.provider, "startup"):
         await getattr(container.provider, "startup")()
 
+    # Load persisted authorization state
+    await container.auth_state.load()
+
     router = create_router(
         container.repository,
         container.scheduler,

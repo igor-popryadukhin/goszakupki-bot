@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, Detection, Notification, AppSettings
+from .models import Base, Detection, Notification, AppSettings, AuthSession
 
 
 @dataclass(slots=True)
@@ -254,6 +254,30 @@ class Repository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
+
+    # --- Persisted auth session (single-user global auth) ---
+
+    async def get_authorized_chat_id(self) -> int | None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(AuthSession).where(AuthSession.id == 1))
+            return int(row.chat_id) if row and row.chat_id is not None else None
+
+    async def set_authorized_chat_id(self, chat_id: int) -> None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(AuthSession).where(AuthSession.id == 1))
+            if row is None:
+                row = AuthSession(id=1, chat_id=chat_id)
+                session.add(row)
+            else:
+                row.chat_id = chat_id
+            await session.commit()
+
+    async def clear_authorized_chat_id(self) -> None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(AuthSession).where(AuthSession.id == 1))
+            if row is not None:
+                row.chat_id = None
+                await session.commit()
 
     async def seed_notifications_global_for_existing(self, source_id: str, *, limit: int | None = None) -> int:
         """Mark existing detections as already notified for the chat to avoid floods on enable.

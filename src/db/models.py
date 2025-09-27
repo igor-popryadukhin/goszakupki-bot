@@ -24,6 +24,14 @@ class AppSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AuthSession(Base):
+    __tablename__ = "auth_session"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Single-row table: row id=1 holds current authorized chat id
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class Detection(Base):
     __tablename__ = "detections"
     __table_args__ = (UniqueConstraint("source_id", "external_id", name="ux_detection"),)

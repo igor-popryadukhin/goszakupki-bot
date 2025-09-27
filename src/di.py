@@ -28,7 +28,7 @@ class Container:
         self.bot: Bot = create_bot(config.telegram.token)
         self.dispatcher: Dispatcher = create_dispatcher()
         self.provider: SourceProvider = self._create_provider()
-        self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "")
+        self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
