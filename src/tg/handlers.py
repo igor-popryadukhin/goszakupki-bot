@@ -41,8 +41,8 @@ def create_router(
     @router.message(CommandStart())
     async def command_start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        # Не создаём пользователя до авторизации, если требуется логин/пароль
-        if auth.enabled and not (await repo.is_authorized(message.chat.id)):
+        # Не создаём пользователя до авторизации
+        if not (await repo.is_authorized(message.chat.id)):
             await message.answer(
                 dedent(
                     """
@@ -105,15 +105,17 @@ def create_router(
 
     @router.message(Command("login"))
     async def command_login(message: Message, command: CommandObject) -> None:
-        if not auth.enabled:
-            await message.answer("Авторизация не требуется.")
-            return
         args = (command.args or "").strip()
         parts = args.split()
         if len(parts) < 2:
             await message.answer("Использование: /login <логин> <пароль>")
             return
         login, password = parts[0], " ".join(parts[1:])
+        if not (auth.login and auth.password):
+            await message.answer(
+                "Авторизационные переменные не настроены. Задайте AUTH_LOGIN и AUTH_PASSWORD в окружении контейнера."
+            )
+            return
         if login == (auth.login or "") and password == (auth.password or ""):
             await repo.authorize_chat(message.chat.id)
             await message.answer("Успешная авторизация. Отправьте /start для продолжения.")
