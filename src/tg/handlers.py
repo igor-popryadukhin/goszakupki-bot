@@ -347,6 +347,33 @@ def create_router(
     return router
 
 
+def _format_preferences(prefs: ChatPreferences) -> str:
+    kws = prefs.keywords or []
+    if not kws:
+        kws_display = "(не заданы)"
+    else:
+        shown = kws[:10]
+        kws_display = "\n".join(shown)
+        if len(kws) > 10:
+            kws_display += f"\n… и ещё {len(kws) - 10}"
+
+    lines = [
+        "Настройки:",
+        f"• Интервал проверки: {prefs.interval_seconds} сек.",
+        f"• Страниц для проверки: {prefs.pages}",
+        "",
+        "Ключевые слова:",
+        kws_display,
+        "",
+        "Подсказки:",
+        "• Кнопка ‘Ключевые слова’ — пришлите список, по одному на строку",
+        "• ‘Интервал’ — например: 5m, 1h, 30s",
+        "• ‘Страницы’ — положительное целое число",
+        "• ‘Назад’ — вернуться в главное меню",
+    ]
+    return "\n".join(lines)
+
+
 async def _format_status(repo: Repository, prefs: ChatPreferences, provider_config: ProviderConfig, chat_id: int) -> str:
     status = "включён" if prefs.enabled else "выключен"
     # Сегодня с полуночи по UTC (упрощённо)
