@@ -109,6 +109,17 @@ class AppConfig:
     database: DatabaseConfig
     provider: ProviderConfig
     logging: LoggingConfig
+    
+    @dataclass(slots=True)
+    class AuthConfig:
+        login: Optional[str] = None
+        password: Optional[str] = None
+
+        @property
+        def enabled(self) -> bool:
+            return bool((self.login or "") and (self.password or ""))
+
+    auth: "AppConfig.AuthConfig" = field(default_factory=lambda: AppConfig.AuthConfig())
 
 
 def load_config() -> AppConfig:
@@ -175,4 +186,8 @@ def load_config() -> AppConfig:
         database=DatabaseConfig(path=db_path),
         provider=provider_config,
         logging=LoggingConfig(),
+        auth=AppConfig.AuthConfig(
+            login=os.getenv("AUTH_LOGIN") or None,
+            password=os.getenv("AUTH_PASSWORD") or None,
+        ),
     )

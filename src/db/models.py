@@ -66,3 +66,11 @@ class Notification(Base):
     source_id: Mapped[str] = mapped_column(String(64), nullable=False)
     external_id: Mapped[str] = mapped_column(String(128), nullable=False)
     notified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AuthorizedChat(Base):
+    __tablename__ = "authorized_chats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
+    authorized_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

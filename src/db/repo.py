@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, ChatSettings, Detection, Notification, User
+from .models import Base, ChatSettings, Detection, Notification, User, AuthorizedChat
 
 
 @dataclass(slots=True)
@@ -300,6 +300,20 @@ class Repository:
             except IntegrityError:
                 await session.rollback()
             return created
+
+    # --- Авторизация чатов ---
+
+    async def is_authorized(self, chat_id: int) -> bool:
+        async with self._session_factory() as session:
+            stmt = select(AuthorizedChat.id).where(AuthorizedChat.chat_id == chat_id)
+            return (await session.scalar(stmt)) is not None
+
+    async def authorize_chat(self, chat_id: int) -> None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(AuthorizedChat).where(AuthorizedChat.chat_id == chat_id))
+            if row is None:
+                session.add(AuthorizedChat(chat_id=chat_id))
+            await session.commit()
 
     async def _get_settings_for_chat(self, session: AsyncSession, chat_id: int) -> ChatSettings:
         stmt = (

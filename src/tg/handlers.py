@@ -11,7 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import StateFilter
 
-from ..config import ProviderConfig
+from ..config import ProviderConfig, AppConfig
 from ..db.repo import ChatPreferences, Repository
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
@@ -34,12 +34,25 @@ def create_router(
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
     provider_config: ProviderConfig,
+    auth: AppConfig.AuthConfig,
 ) -> Router:
     router = Router()
 
     @router.message(CommandStart())
     async def command_start(message: Message, state: FSMContext) -> None:
         await state.clear()
+        # Не создаём пользователя до авторизации, если требуется логин/пароль
+        if auth.enabled and not (await repo.is_authorized(message.chat.id)):
+            await message.answer(
+                dedent(
+                    """
+                    Доступ к боту ограничен. Выполните авторизацию:
+                    /login <логин> <пароль>
+                    """
+                ).strip()
+            )
+            return
+
         prefs = await repo.get_or_create_user(
             message.chat.id,
             message.from_user.username if message.from_user else None,
@@ -89,6 +102,23 @@ def create_router(
                 """
             ).strip()
         )
+
+    @router.message(Command("login"))
+    async def command_login(message: Message, command: CommandObject) -> None:
+        if not auth.enabled:
+            await message.answer("Авторизация не требуется.")
+            return
+        args = (command.args or "").strip()
+        parts = args.split()
+        if len(parts) < 2:
+            await message.answer("Использование: /login <логин> <пароль>")
+            return
+        login, password = parts[0], " ".join(parts[1:])
+        if login == (auth.login or "") and password == (auth.password or ""):
+            await repo.authorize_chat(message.chat.id)
+            await message.answer("Успешная авторизация. Отправьте /start для продолжения.")
+        else:
+            await message.answer("Неверные учётные данные.")
 
     @router.message(Command("settings"))
     async def command_settings(message: Message) -> None:

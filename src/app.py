@@ -9,6 +9,7 @@ from .config import load_config
 from .di import Container
 from .logging_config import configure_logging
 from .tg.handlers import create_router
+from .tg.auth_middleware import AuthMiddleware
 from .util.signals import setup_signal_handlers
 
 LOGGER = logging.getLogger(__name__)
@@ -28,8 +29,12 @@ async def main() -> None:
         container.detail_scheduler,
         container.detail_service,
         config.provider,
+        config.auth,
     )
     dispatcher: Dispatcher = container.dispatcher
+    # Глобальная проверка авторизации (если включена)
+    dispatcher.message.outer_middleware(AuthMiddleware(container.repository, config.auth))
+    dispatcher.callback_query.outer_middleware(AuthMiddleware(container.repository, config.auth))
     dispatcher.include_router(router)
 
     shutdown_called = False
