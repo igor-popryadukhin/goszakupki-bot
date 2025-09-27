@@ -109,6 +109,37 @@ def create_router(
         prefs = await repo.get_preferences(message.chat.id)
         await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
+    # Очистка детекций: подтверждение через inline-кнопки
+    @router.message(F.text.casefold() == "очистить детекции")
+    async def ru_clear_detections_prompt(message: Message) -> None:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Подтвердить очистку", callback_data="confirm_clear_det"),
+                    InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det"),
+                ]
+            ]
+        )
+        await message.answer(
+            "Внимание: будут удалены все детекции для текущего источника. Уведомления не трогаем.",
+            reply_markup=kb,
+        )
+
+    @router.callback_query(F.data == "confirm_clear_det")
+    async def clear_detections_cb(callback: CallbackQuery) -> None:
+        try:
+            deleted = await repo.clear_detections(source_id=provider_config.source_id)
+            await callback.message.answer(f"Очистка завершена. Удалено записей: {deleted}")
+        except Exception:
+            LOGGER.exception("Failed to clear detections")
+            await callback.message.answer("Ошибка при очистке детекций")
+        await callback.answer()
+
+    @router.callback_query(F.data == "cancel_clear_det")
+    async def clear_detections_cancel_cb(callback: CallbackQuery) -> None:
+        await callback.message.answer("Очистка отменена")
+        await callback.answer()
+
     # Глобальная отмена доступна в любом состоянии
     @router.message(Command("cancel"), StateFilter("*"))
     @router.message(F.text.casefold() == "отмена", StateFilter("*"))

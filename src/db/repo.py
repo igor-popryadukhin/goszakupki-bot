@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, delete
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -324,6 +324,16 @@ class Repository:
                 )
             )
             return int(await session.scalar(stmt) or 0)
+
+    async def clear_detections(self, *, source_id: str | None = None) -> int:
+        async with self._session_factory() as session:
+            if source_id:
+                stmt = delete(Detection).where(Detection.source_id == source_id)
+            else:
+                stmt = delete(Detection)
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(getattr(result, "rowcount", 0) or 0)
 
 
 def _split_keywords(text: str) -> list[str]:

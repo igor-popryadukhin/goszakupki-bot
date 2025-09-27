@@ -19,6 +19,7 @@ def settings_menu_keyboard(enabled: bool = False) -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="Ключевые слова")],
             [KeyboardButton(text="Интервал"), KeyboardButton(text="Страницы")],
+            [KeyboardButton(text="Очистить детекции")],
             [KeyboardButton(text="Назад")],
         ],
         resize_keyboard=True,
