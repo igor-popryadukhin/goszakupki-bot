@@ -9,7 +9,7 @@ from aiogram import Bot
 from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import Listing, SourceProvider
-from .match import Keyword, compile_keywords, find_matching_keywords
+from .match import Keyword  # kept for compatibility; _notify_chats is disabled
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,21 +52,19 @@ class MonitorService:
                 "source": self._config.source_id,
             },
         )
-        keywords = compile_keywords(prefs.keywords)
 
         for page in range(1, max_pages + 1):
             listings = await self._provider.fetch_page(page)
             LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
             if not listings:
                 continue
-            await self._process_page(page, listings, prefs, keywords)
+            await self._process_page(page, listings, prefs)
 
     async def _process_page(
         self,
         page: int,
         listings: Sequence[Listing],
         prefs: AppPreferences,
-        keywords: list[Keyword],
     ) -> None:
         inserted = 0
         notified_total = 0
@@ -84,7 +82,9 @@ class MonitorService:
             if not is_new:
                 continue
             inserted += 1
-            notified = await self._notify_chats(page, listing, prefs, keywords)
+            # Notifications on list pages are disabled; handled by detail scanner after text load
+            # Keep counter for symmetry
+            notified = 0
             notified_total += notified
         LOGGER.debug(
             "Processed page",
@@ -98,37 +98,9 @@ class MonitorService:
         prefs: AppPreferences,
         keywords: list[Keyword],
     ) -> int:
-        sent = 0
-        if page > (prefs.pages or 0):
-            LOGGER.debug("Skip: page out of range", extra={"page": page, "pages": prefs.pages})
-            return 0
-        if not keywords:
-            LOGGER.debug("Skip: no keywords configured")
-            return 0
-        matched = find_matching_keywords(listing.title, keywords)
-        if not matched:
-            LOGGER.debug(
-                "Skip: title has no keyword matches",
-                extra={"title": listing.title, "id": listing.external_id},
-            )
-            return 0
-        # Global dedupe
-        if await self._repo.has_notification_global_sent(self._config.source_id, listing.external_id):
-            LOGGER.debug("Skip: already notified globally", extra={"id": listing.external_id})
-            return 0
-        text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
-        target = self._auth_state.authorized_target()
-        if target is None:
-            LOGGER.debug("Skip: no authorized chat in session")
-            return 0
-        try:
-            await self._bot.send_message(chat_id=target, text=text, disable_web_page_preview=False)
-            sent = 1
-        except Exception:
-            LOGGER.exception("Failed to send notification", extra={"chat_id": target})
-        if sent > 0:
-            await self._repo.create_notification_global(self._config.source_id, listing.external_id, sent=True)
-        return sent
+        # Disabled: notifications are only sent after detail text scan
+        LOGGER.debug("List-stage notifications disabled; waiting for detail scan", extra={"id": listing.external_id, "page": page})
+        return 0
 
     def _format_message(self, listing: Listing, matched_keywords: list[str] | None = None) -> str:
         title = listing.title or "Без названия"

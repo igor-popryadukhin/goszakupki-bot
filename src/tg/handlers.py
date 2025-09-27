@@ -466,7 +466,7 @@ async def _format_status(repo: Repository, prefs: AppPreferences, provider_confi
         "Данные:",
         f"• Детекции: всего {det_total}, сегодня {det_today}",
         f"• Очередь детсканера: {pending_detail}",
-        f"• Уведомления: всего {notif_total}, сегодня {notif_today}",
+        f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
     ]
     if last_det:
         lines.append(f"• Последняя детекция: {last_det}")
