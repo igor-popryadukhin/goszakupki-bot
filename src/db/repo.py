@@ -335,6 +335,39 @@ class Repository:
             await session.commit()
             return int(getattr(result, "rowcount", 0) or 0)
 
+    # --- Статистика по detections/notifications ---
+    async def count_detections(self, *, source_id: str | None = None, since: datetime | None = None) -> int:
+        async with self._session_factory() as session:
+            stmt = select(func.count(Detection.id))
+            if source_id:
+                stmt = stmt.where(Detection.source_id == source_id)
+            if since:
+                stmt = stmt.where(Detection.first_seen >= since)
+            return int(await session.scalar(stmt) or 0)
+
+    async def last_detection_time(self, *, source_id: str | None = None) -> datetime | None:
+        async with self._session_factory() as session:
+            stmt = select(func.max(Detection.first_seen))
+            if source_id:
+                stmt = stmt.where(Detection.source_id == source_id)
+            return await session.scalar(stmt)
+
+    async def count_notifications_for_chat(self, chat_id: int, *, source_id: str | None = None, since: datetime | None = None) -> int:
+        async with self._session_factory() as session:
+            stmt = select(func.count(Notification.id)).where(Notification.chat_id == chat_id)
+            if source_id:
+                stmt = stmt.where(Notification.source_id == source_id)
+            if since:
+                stmt = stmt.where(Notification.notified_at >= since)
+            return int(await session.scalar(stmt) or 0)
+
+    async def last_notification_time_for_chat(self, chat_id: int, *, source_id: str | None = None) -> datetime | None:
+        async with self._session_factory() as session:
+            stmt = select(func.max(Notification.notified_at)).where(Notification.chat_id == chat_id)
+            if source_id:
+                stmt = stmt.where(Notification.source_id == source_id)
+            return await session.scalar(stmt)
+
 
 def _split_keywords(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]

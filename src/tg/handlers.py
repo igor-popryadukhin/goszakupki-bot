@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from textwrap import dedent
+from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -49,7 +50,15 @@ def create_router(
             dedent(
                 """
                 Привет! Я бот для мониторинга закупок goszakupki.by.
-                Используй /help, чтобы увидеть список команд.
+                
+                Быстрый старт:
+                1) Нажми «Настройки» и задай «Ключевые слова» (каждое с новой строки)
+                2) Укажи «Интервал» и «Страницы» (при необходимости)
+                3) Вернись «Назад» и нажми «Включить»
+                4) Проверить состояние: «Статус»
+                
+                Подсказки:
+                • /help — список команд
                 """
             ).strip(),
             reply_markup=main_menu_keyboard(prefs.enabled),
@@ -62,29 +71,42 @@ def create_router(
         await message.answer(
             dedent(
                 """
-                Доступные команды:
-                /settings — показать текущие настройки
-                /set_keywords — задать ключевые слова (одно сообщение, каждое на новой строке)
-                /set_interval <интервал> — интервал проверки (например, 5m, 1h)
+                Быстрый старт:
+                1) «Настройки» → «Ключевые слова» — пришли список (по одному на строку)
+                2) «Интервал»/«Страницы» — при необходимости
+                3) «Назад» → «Включить»
+                
+                Команды:
+                /settings — открыть настройки
+                /set_keywords — задать ключевые слова сообщением
+                /set_interval <интервал> — например: 5m, 1h, 30s
                 /set_pages <число> — количество страниц для проверки
                 /enable — включить мониторинг
                 /disable — выключить мониторинг
-                /test — отправить тестовое уведомление
-                /status — показать статус мониторинга
+                /status — показать статус
+                /test — тестовое уведомление
                 /cancel — отменить текущий ввод
                 """
             ).strip()
         )
 
     @router.message(Command("settings"))
-    @router.message(Command("status"))
     async def command_settings(message: Message) -> None:
         prefs = await repo.get_preferences(message.chat.id)
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
         text = _format_preferences(prefs)
-        await message.answer(text)
+        await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
+
+    @router.message(Command("status"))
+    async def command_status(message: Message) -> None:
+        prefs = await repo.get_preferences(message.chat.id)
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        text = await _format_status(repo, prefs, provider_config, message.chat.id)
+        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled))
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
@@ -98,7 +120,7 @@ def create_router(
 
     @router.message(F.text.casefold() == "статус")
     async def ru_status(message: Message) -> None:
-        await command_settings(message)
+        await command_status(message)
 
     @router.message(F.text.casefold() == "помощь")
     async def ru_help(message: Message) -> None:
@@ -320,32 +342,47 @@ def create_router(
         )
         await message.answer(text)
 
-    @router.message(Command("detail_status"))
-    async def command_detail_status(message: Message) -> None:
-        count = await repo.count_pending_detail()
-        await message.answer(f"Детсканер: ожиданий в очереди: {count}")
-
-    @router.message(Command("detail_run"))
-    async def command_detail_run(message: Message) -> None:
-        await message.answer("Запускаю детальный скан...")
-        await detail_service.run_scan()
-        count = await repo.count_pending_detail()
-        await message.answer(f"Готово. Осталось в очереди: {count}")
+    # Команды управления детсканером доступны только через переключатель мониторинга
 
     return router
 
 
-def _format_preferences(prefs: ChatPreferences) -> str:
-    keywords_display = "\n".join(prefs.keywords) if prefs.keywords else "(нет)"
+async def _format_status(repo: Repository, prefs: ChatPreferences, provider_config: ProviderConfig, chat_id: int) -> str:
     status = "включён" if prefs.enabled else "выключен"
-    return (
-        "\n".join(
-            [
-                f"Статус: {status}",
-                f"Интервал: {prefs.interval_seconds} сек.",
-                f"Страниц: {prefs.pages}",
-                "Ключевые слова:",
-                keywords_display,
-            ]
-        )
-    )
+    # Сегодня с полуночи по UTC (упрощённо)
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    # Счётчики
+    det_total = await repo.count_detections(source_id=provider_config.source_id)
+    det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
+    pending_detail = await repo.count_pending_detail()
+    notif_total = await repo.count_notifications_for_chat(chat_id, source_id=provider_config.source_id)
+    notif_today = await repo.count_notifications_for_chat(chat_id, source_id=provider_config.source_id, since=today_start)
+    last_det = await repo.last_detection_time(source_id=provider_config.source_id)
+    last_notif = await repo.last_notification_time_for_chat(chat_id, source_id=provider_config.source_id)
+
+    kws = prefs.keywords or []
+    kws_display = "\n".join(kws[:10]) if kws else "(нет)"
+    if kws and len(kws) > 10:
+        kws_display += f"\n… и ещё {len(kws) - 10}"
+
+    lines = [
+        f"Статус мониторинга: {status}",
+        f"Интервал опроса: {prefs.interval_seconds} сек.",
+        f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
+        f"Страниц для проверки: {prefs.pages}",
+        "",
+        "Данные:",
+        f"• Детекции: всего {det_total}, сегодня {det_today}",
+        f"• Очередь детсканера: {pending_detail}",
+        f"• Уведомления: всего {notif_total}, сегодня {notif_today}",
+    ]
+    if last_det:
+        lines.append(f"• Последняя детекция: {last_det}")
+    if last_notif:
+        lines.append(f"• Последнее уведомление: {last_notif}")
+    lines.extend([
+        "",
+        "Ключевые слова:",
+        kws_display,
+    ])
+    return "\n".join(lines)
