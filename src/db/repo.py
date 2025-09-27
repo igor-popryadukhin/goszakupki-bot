@@ -9,13 +9,11 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, ChatSettings, Detection, Notification, User, AuthorizedChat
+from .models import Base, ChatSettings, Detection, Notification, User, AuthorizedChat, AppSettings
 
 
 @dataclass(slots=True)
-class ChatPreferences:
-    chat_id: int
-    username: str | None
+class AppPreferences:
     keywords: list[str]
     interval_seconds: int
     pages: int
@@ -26,111 +24,74 @@ class Repository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get_or_create_user(self, chat_id: int, username: str | None, *, default_interval: int, default_pages: int) -> ChatPreferences:
+    async def get_or_create_settings(self, *, default_interval: int, default_pages: int) -> AppPreferences:
         async with self._session_factory() as session:
-            user = await session.scalar(select(User).where(User.chat_id == chat_id))
-            if user is None:
-                user = User(chat_id=chat_id, username=username)
-                session.add(user)
-                await session.flush()
-                settings = ChatSettings(
-                    user_id=user.id,
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                settings = AppSettings(
                     keywords="",
                     interval_seconds=default_interval,
                     pages=default_pages,
                     enabled=False,
                 )
                 session.add(settings)
-            else:
-                if username and user.username != username:
-                    user.username = username
-                settings = await session.scalar(select(ChatSettings).where(ChatSettings.user_id == user.id))
-                if settings is None:
-                    settings = ChatSettings(
-                        user_id=user.id,
-                        keywords="",
-                        interval_seconds=default_interval,
-                        pages=default_pages,
-                        enabled=False,
-                    )
-                    session.add(settings)
-            await session.commit()
-            return ChatPreferences(
-                chat_id=chat_id,
-                username=user.username,
+                await session.commit()
+            return AppPreferences(
                 keywords=_split_keywords(settings.keywords),
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
             )
 
-    async def update_keywords(self, chat_id: int, keywords: Iterable[str]) -> None:
+    async def update_keywords(self, keywords: Iterable[str]) -> None:
         normalized = "\n".join(k.strip() for k in keywords if k.strip())
         async with self._session_factory() as session:
-            settings = await self._get_settings_for_chat(session, chat_id)
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
             settings.keywords = normalized
             await session.commit()
 
-    async def set_interval(self, chat_id: int, interval_seconds: int) -> None:
+    async def set_interval(self, interval_seconds: int) -> None:
         async with self._session_factory() as session:
-            settings = await self._get_settings_for_chat(session, chat_id)
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
             settings.interval_seconds = interval_seconds
             await session.commit()
 
-    async def set_pages(self, chat_id: int, pages: int) -> None:
+    async def set_pages(self, pages: int) -> None:
         async with self._session_factory() as session:
-            settings = await self._get_settings_for_chat(session, chat_id)
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
             settings.pages = pages
             await session.commit()
 
-    async def set_enabled(self, chat_id: int, enabled: bool) -> None:
+    async def set_enabled(self, enabled: bool) -> None:
         async with self._session_factory() as session:
-            settings = await self._get_settings_for_chat(session, chat_id)
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
             settings.enabled = enabled
             await session.commit()
 
-    async def get_preferences(self, chat_id: int) -> ChatPreferences | None:
+    async def get_preferences(self) -> AppPreferences | None:
         async with self._session_factory() as session:
-            stmt = (
-                select(User, ChatSettings)
-                .join(ChatSettings, ChatSettings.user_id == User.id)
-                .where(User.chat_id == chat_id)
-            )
-            result = await session.execute(stmt)
-            row = result.first()
-            if not row:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
                 return None
-            user, settings = row
-            return ChatPreferences(
-                chat_id=user.chat_id,
-                username=user.username,
+            return AppPreferences(
                 keywords=_split_keywords(settings.keywords),
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
             )
 
-    async def list_enabled_preferences(self) -> list[ChatPreferences]:
+    async def is_enabled(self) -> bool:
         async with self._session_factory() as session:
-            stmt = (
-                select(User, ChatSettings)
-                .join(ChatSettings, ChatSettings.user_id == User.id)
-                .where(ChatSettings.enabled.is_(True))
-            )
-            rows = (await session.execute(stmt)).all()
-            prefs: list[ChatPreferences] = []
-            for user, settings in rows:
-                prefs.append(
-                    ChatPreferences(
-                        chat_id=user.chat_id,
-                        username=user.username,
-                        keywords=_split_keywords(settings.keywords),
-                        interval_seconds=settings.interval_seconds,
-                        pages=settings.pages,
-                        enabled=settings.enabled,
-                    )
-                )
-            return prefs
+            settings = await session.scalar(select(AppSettings).limit(1))
+            return bool(settings and settings.enabled)
 
     async def record_detection(
         self,
@@ -266,7 +227,25 @@ class Repository:
             except IntegrityError:
                 await session.rollback()
 
-    async def seed_notifications_for_existing(self, chat_id: int, source_id: str, *, limit: int | None = None) -> int:
+    # Global notifications (chat_id = 0)
+    async def has_notification_global(self, source_id: str, external_id: str) -> bool:
+        async with self._session_factory() as session:
+            stmt = select(Notification.id).where(
+                Notification.chat_id == 0,
+                Notification.source_id == source_id,
+                Notification.external_id == external_id,
+            )
+            return (await session.scalar(stmt)) is not None
+
+    async def create_notification_global(self, source_id: str, external_id: str, *, sent: bool) -> None:
+        async with self._session_factory() as session:
+            session.add(Notification(chat_id=0, source_id=source_id, external_id=external_id, sent=bool(sent)))
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+
+    async def seed_notifications_global_for_existing(self, source_id: str, *, limit: int | None = None) -> int:
         """Mark existing detections as already notified for the chat to avoid floods on enable.
 
         Returns number of created notifications.
@@ -279,7 +258,7 @@ class Repository:
                 .outerjoin(
                     Notification,
                     and_(
-                        Notification.chat_id == chat_id,
+                        Notification.chat_id == 0,
                         Notification.source_id == Detection.source_id,
                         Notification.external_id == Detection.external_id,
                     ),
@@ -293,7 +272,7 @@ class Repository:
                 return 0
             created = 0
             for ext_id in rows:
-                session.add(Notification(chat_id=chat_id, source_id=source_id, external_id=ext_id))
+                session.add(Notification(chat_id=0, source_id=source_id, external_id=ext_id, sent=False))
                 created += 1
             try:
                 await session.commit()
@@ -315,16 +294,10 @@ class Repository:
                 session.add(AuthorizedChat(chat_id=chat_id))
             await session.commit()
 
-    async def _get_settings_for_chat(self, session: AsyncSession, chat_id: int) -> ChatSettings:
-        stmt = (
-            select(ChatSettings)
-            .join(User, User.id == ChatSettings.user_id)
-            .where(User.chat_id == chat_id)
-        )
-        settings = await session.scalar(stmt)
-        if settings is None:
-            raise ValueError(f"Chat {chat_id} is not registered")
-        return settings
+    async def list_authorized_chat_ids(self) -> list[int]:
+        async with self._session_factory() as session:
+            ids = (await session.execute(select(AuthorizedChat.chat_id))).scalars().all()
+            return list(ids)
 
     # --- Статистика детскана ---
     async def count_pending_detail(self) -> int:
@@ -366,18 +339,18 @@ class Repository:
                 stmt = stmt.where(Detection.source_id == source_id)
             return await session.scalar(stmt)
 
-    async def count_notifications_for_chat(self, chat_id: int, *, source_id: str | None = None, since: datetime | None = None) -> int:
+    async def count_notifications_global(self, *, source_id: str | None = None, since: datetime | None = None) -> int:
         async with self._session_factory() as session:
-            stmt = select(func.count(Notification.id)).where(Notification.chat_id == chat_id, Notification.sent.is_(True))
+            stmt = select(func.count(Notification.id)).where(Notification.chat_id == 0, Notification.sent.is_(True))
             if source_id:
                 stmt = stmt.where(Notification.source_id == source_id)
             if since:
                 stmt = stmt.where(Notification.notified_at >= since)
             return int(await session.scalar(stmt) or 0)
 
-    async def last_notification_time_for_chat(self, chat_id: int, *, source_id: str | None = None) -> datetime | None:
+    async def last_notification_time_global(self, *, source_id: str | None = None) -> datetime | None:
         async with self._session_factory() as session:
-            stmt = select(func.max(Notification.notified_at)).where(Notification.chat_id == chat_id, Notification.sent.is_(True))
+            stmt = select(func.max(Notification.notified_at)).where(Notification.chat_id == 0, Notification.sent.is_(True))
             if source_id:
                 stmt = stmt.where(Notification.source_id == source_id)
             return await session.scalar(stmt)
@@ -390,7 +363,8 @@ def _split_keywords(text: str) -> list[str]:
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # SQLite: добавить недостающие колонки в detections без миграций
+        # SQLite: добавить недостающие колонки без миграций
+        # detections
         try:
             result = await conn.exec_driver_sql("PRAGMA table_info('detections')")
             cols = {row[1] for row in result}
@@ -415,11 +389,13 @@ async def init_db(engine: AsyncEngine) -> None:
                 alters.append("ALTER TABLE detections ADD COLUMN detail_next_retry_at DATETIME NULL")
             for sql in alters:
                 await conn.exec_driver_sql(sql)
-            # Ensure notifications table has 'sent' column
+        except Exception:
+            pass
+        # notifications
+        try:
             result = await conn.exec_driver_sql("PRAGMA table_info('notifications')")
             ncols = {row[1] for row in result}
             if "sent" not in ncols:
                 await conn.exec_driver_sql("ALTER TABLE notifications ADD COLUMN sent BOOLEAN NOT NULL DEFAULT 0")
         except Exception:
-            # Безопасно игнорируем, если не SQLite или PRAGMA недоступен
             pass

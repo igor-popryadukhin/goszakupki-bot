@@ -36,13 +36,12 @@ class DetailScanScheduler:
         self._scheduler.shutdown(wait=False)
 
     async def refresh_schedule(self) -> None:
-        # Останавливаем детсканер, если нет включённых чатов
-        prefs = await self._repo.list_enabled_preferences()
-        if not prefs:
+        # Останавливаем детсканер, если глобально выключено
+        if not await self._repo.is_enabled():
             if self._job is not None:
                 self._job.remove()
                 self._job = None
-                LOGGER.info("Detail scan job stopped: no enabled chats")
+                LOGGER.info("Detail scan job stopped: disabled")
             return
         interval = await self._determine_interval()
         trigger = IntervalTrigger(seconds=interval, start_date=datetime.now(self._scheduler.timezone))

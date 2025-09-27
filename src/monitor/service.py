@@ -7,7 +7,7 @@ from typing import Sequence
 from aiogram import Bot
 
 from ..config import ProviderConfig
-from ..db.repo import ChatPreferences, Repository
+from ..db.repo import Repository, AppPreferences
 from ..provider.base import Listing, SourceProvider
 from .match import Keyword, compile_keywords, find_matching_keywords
 
@@ -37,36 +37,34 @@ class MonitorService:
                 LOGGER.exception("Error during monitor check")
 
     async def _run_check(self) -> None:
-        prefs = await self._repo.list_enabled_preferences()
-        if not prefs:
-            LOGGER.debug("Skip monitor iteration: no enabled chats")
+        prefs = await self._repo.get_preferences()
+        if not prefs or not prefs.enabled:
+            LOGGER.debug("Skip monitor iteration: disabled")
             return
-        max_pages = max((pref.pages for pref in prefs if pref.pages > 0), default=self._config.pages_default)
+        max_pages = prefs.pages if prefs.pages > 0 else self._config.pages_default
         LOGGER.debug(
             "Starting monitor iteration",
             extra={
-                "enabled_chats": len(prefs),
+                "mode": "global",
                 "max_pages": max_pages,
                 "source": self._config.source_id,
             },
         )
-        keyword_map: dict[int, list[Keyword]] = {
-            pref.chat_id: compile_keywords(pref.keywords) for pref in prefs
-        }
+        keywords = compile_keywords(prefs.keywords)
 
         for page in range(1, max_pages + 1):
             listings = await self._provider.fetch_page(page)
             LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
             if not listings:
                 continue
-            await self._process_page(page, listings, prefs, keyword_map)
+            await self._process_page(page, listings, prefs, keywords)
 
     async def _process_page(
         self,
         page: int,
         listings: Sequence[Listing],
-        prefs: Sequence[ChatPreferences],
-        keyword_map: dict[int, list[Keyword]],
+        prefs: AppPreferences,
+        keywords: list[Keyword],
     ) -> None:
         inserted = 0
         notified_total = 0
@@ -84,7 +82,7 @@ class MonitorService:
             if not is_new:
                 continue
             inserted += 1
-            notified = await self._notify_chats(page, listing, prefs, keyword_map)
+            notified = await self._notify_chats(page, listing, prefs, keywords)
             notified_total += notified
         LOGGER.debug(
             "Processed page",
@@ -95,35 +93,30 @@ class MonitorService:
         self,
         page: int,
         listing: Listing,
-        prefs: Sequence[ChatPreferences],
-        keyword_map: dict[int, list[Keyword]],
+        prefs: AppPreferences,
+        keywords: list[Keyword],
     ) -> int:
         sent = 0
-        for pref in prefs:
-            if pref.pages <= 0:
-                LOGGER.debug("Skip chat: pages <= 0", extra={"chat_id": pref.chat_id})
-                continue
-            if page > pref.pages:
-                LOGGER.debug("Skip chat: page out of range", extra={"chat_id": pref.chat_id, "page": page, "pages": pref.pages})
-                continue
-            kws = keyword_map.get(pref.chat_id, [])
-            if not kws:
-                LOGGER.debug("Skip chat: no keywords", extra={"chat_id": pref.chat_id})
-                continue
-            matched = find_matching_keywords(listing.title, kws)
-            if not matched:
-                continue
-            if await self._repo.has_notification(pref.chat_id, self._config.source_id, listing.external_id):
-                LOGGER.debug("Skip chat: already notified", extra={"chat_id": pref.chat_id, "id": listing.external_id})
-                continue
-            text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
+        if page > (prefs.pages or 0):
+            return 0
+        if not keywords:
+            return 0
+        matched = find_matching_keywords(listing.title, keywords)
+        if not matched:
+            return 0
+        # Global dedupe
+        if await self._repo.has_notification_global(self._config.source_id, listing.external_id):
+            return 0
+        text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
+        targets = await self._repo.list_authorized_chat_ids()
+        for chat_id in targets:
             try:
-                await self._bot.send_message(chat_id=pref.chat_id, text=text, disable_web_page_preview=False)
-            except Exception:  # pragma: no cover - network errors
-                LOGGER.exception("Failed to send notification", extra={"chat_id": pref.chat_id})
-                continue
-            await self._repo.create_notification(pref.chat_id, self._config.source_id, listing.external_id)
-            sent += 1
+                await self._bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=False)
+                sent += 1
+            except Exception:
+                LOGGER.exception("Failed to send notification", extra={"chat_id": chat_id})
+        if sent > 0:
+            await self._repo.create_notification_global(self._config.source_id, listing.external_id, sent=True)
         return sent
 
     def _format_message(self, listing: Listing, matched_keywords: list[str] | None = None) -> str:

@@ -7,7 +7,7 @@ from aiogram import Bot
 from datetime import datetime, timedelta
 
 from ..config import ProviderConfig
-from ..db.repo import ChatPreferences, Repository
+from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
 from .match import Keyword, compile_keywords, find_matching_keywords
 
@@ -42,17 +42,17 @@ class DetailScanService:
             remaining = await self._repo.count_pending_detail()
             LOGGER.info("Detail scan tick", extra={"pulled": 0, "remaining": remaining})
             return
-        prefs = await self._repo.list_enabled_preferences()
-        keyword_map: dict[int, list[Keyword]] = {pref.chat_id: compile_keywords(pref.keywords) for pref in prefs}
-        await self._process_item(item, prefs, keyword_map)
+        prefs = await self._repo.get_preferences()
+        keywords = compile_keywords(prefs.keywords) if (prefs and prefs.enabled) else []
+        await self._process_item(item, prefs, keywords)
         remaining = await self._repo.count_pending_detail()
         LOGGER.info("Detail scan tick", extra={"pulled": 1, "remaining": remaining})
 
     async def _process_item(
         self,
         item: Repository.PendingDetail,
-        prefs: list[ChatPreferences],
-        keyword_map: dict[int, list[Keyword]],
+        prefs: AppPreferences | None,
+        keywords: list[Keyword],
     ) -> None:
         text = ""
         try:
@@ -74,24 +74,19 @@ class DetailScanService:
             return
 
         notified = 0
-        if text:
-            for pref in prefs:
-                kws = keyword_map.get(pref.chat_id, [])
-                if not kws:
-                    continue
-                matched = find_matching_keywords(text, kws)
-                if not matched:
-                    continue
-                if await self._repo.has_notification(pref.chat_id, self._config.source_id, item.external_id):
-                    continue
+        if text and prefs and prefs.enabled and keywords:
+            matched = find_matching_keywords(text, keywords)
+            if matched and not await self._repo.has_notification_global(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
-                try:
-                    await self._bot.send_message(chat_id=pref.chat_id, text=message, disable_web_page_preview=False)
-                except Exception:  # pragma: no cover
-                    LOGGER.exception("Failed to send detail notification", extra={"chat_id": pref.chat_id})
-                    continue
-                await self._repo.create_notification(pref.chat_id, self._config.source_id, item.external_id)
-                notified += 1
+                targets = await self._repo.list_authorized_chat_ids()
+                for chat_id in targets:
+                    try:
+                        await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
+                        notified += 1
+                    except Exception:
+                        LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
+                if notified > 0:
+                    await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
 
         LOGGER.debug(
             "Detail processed",

@@ -35,6 +35,17 @@ class ChatSettings(Base):
     user: Mapped[User] = relationship("User", back_populates="settings")
 
 
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    keywords: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    pages: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Detection(Base):
     __tablename__ = "detections"
     __table_args__ = (UniqueConstraint("source_id", "external_id", name="ux_detection"),)

@@ -36,15 +36,15 @@ class MonitorScheduler:
         self._scheduler.shutdown(wait=False)
 
     async def refresh_schedule(self) -> None:
-        # Если нет включённых чатов — останавливаем задачу полностью
-        prefs = await self._repo.list_enabled_preferences()
-        if not prefs:
+        # Если глобальные настройки выключены — останавливаем задачу полностью
+        if not await self._repo.is_enabled():
             if self._job is not None:
                 self._job.remove()
                 self._job = None
-                LOGGER.info("Monitor job stopped: no enabled chats")
+                LOGGER.info("Monitor job stopped: disabled")
             return
-        interval = await self._determine_interval()
+        prefs = await self._repo.get_preferences()
+        interval = prefs.interval_seconds if prefs and prefs.interval_seconds > 0 else await self._determine_interval()
         trigger = IntervalTrigger(seconds=interval, start_date=datetime.now(self._scheduler.timezone))
         if self._job is None:
             self._job = self._scheduler.add_job(self._service.run_check, trigger=trigger)
@@ -59,8 +59,7 @@ class MonitorScheduler:
             LOGGER.info("Monitor job rescheduled", extra={"interval": interval})
 
     async def _determine_interval(self) -> int:
-        prefs = await self._repo.list_enabled_preferences()
-        intervals = [pref.interval_seconds for pref in prefs if pref.interval_seconds > 0]
-        if intervals:
-            return min(intervals)
+        prefs = await self._repo.get_preferences()
+        if prefs and prefs.interval_seconds > 0:
+            return prefs.interval_seconds
         return max(self._provider_config.check_interval_default, 60)

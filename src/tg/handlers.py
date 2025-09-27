@@ -12,7 +12,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 from aiogram.filters import StateFilter
 
 from ..config import ProviderConfig, AppConfig
-from ..db.repo import ChatPreferences, Repository
+from ..db.repo import Repository, AppPreferences
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
@@ -58,9 +58,7 @@ def create_router(
             )
             return
 
-        prefs = await repo.get_or_create_user(
-            message.chat.id,
-            message.from_user.username if message.from_user else None,
+        prefs = await repo.get_or_create_settings(
             default_interval=provider_config.check_interval_default,
             default_pages=provider_config.pages_default,
         )
@@ -159,7 +157,7 @@ def create_router(
 
     @router.message(Command("settings"))
     async def command_settings(message: Message) -> None:
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
@@ -168,17 +166,17 @@ def create_router(
 
     @router.message(Command("status"))
     async def command_status(message: Message) -> None:
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        text = await _format_status(repo, prefs, provider_config, message.chat.id)
+        text = await _format_status(repo, prefs, provider_config)
         await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled))
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
     async def ru_settings_menu(message: Message) -> None:
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
@@ -195,7 +193,7 @@ def create_router(
 
     @router.message(F.text.casefold() == "назад")
     async def ru_back(message: Message) -> None:
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     # Очистка детекций: подтверждение через inline-кнопки
@@ -234,7 +232,7 @@ def create_router(
     @router.message(F.text.casefold() == "отмена", StateFilter("*"))
     async def command_cancel_any(message: Message, state: FSMContext) -> None:
         await state.clear()
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         await message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     @router.message(Command("set_keywords"))
@@ -272,15 +270,15 @@ def create_router(
             await message.answer("Сейчас идёт ввод ключевых слов. Отправь список или нажми ‘Отмена’.")
             return
         lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        await repo.update_keywords(message.chat.id, lines)
+        await repo.update_keywords(lines)
         await state.clear()
-        prefs2 = await repo.get_preferences(message.chat.id)
+        prefs2 = await repo.get_preferences()
         await message.answer("Ключевые слова обновлены", reply_markup=main_menu_keyboard(prefs2.enabled if prefs2 else False))
 
     @router.callback_query(F.data == "cancel_keywords")
     async def cancel_keywords_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        prefs = await repo.get_preferences(callback.message.chat.id)
+        prefs = await repo.get_preferences()
         await callback.message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
         await callback.answer()
 
@@ -298,10 +296,10 @@ def create_router(
         except ValueError as exc:
             await message.answer(f"Не удалось распознать интервал: {exc}")
             return
-        await repo.set_interval(message.chat.id, seconds)
+        await repo.set_interval(seconds)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     # Обработчик /cancel ниже оставлен для совместимости (глобальный выше перехватит)
@@ -320,7 +318,7 @@ def create_router(
             await message.answer(f"Не удалось распознать интервал: {exc}. Попробуй ещё раз.")
             return
         await state.clear()
-        await repo.set_interval(message.chat.id, seconds)
+        await repo.set_interval(seconds)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         await message.answer(f"Интервал обновлён: {seconds} секунд")
@@ -337,8 +335,8 @@ def create_router(
         except ValueError:
             await message.answer("Число страниц должно быть положительным целым")
             return
-        await repo.set_pages(message.chat.id, pages)
-        prefs = await repo.get_preferences(message.chat.id)
+        await repo.set_pages(pages)
+        prefs = await repo.get_preferences()
         await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     # Кнопка: Страницы (запрос значения)
@@ -357,20 +355,20 @@ def create_router(
             await message.answer("Число страниц должно быть положительным целым. Попробуй ещё раз.")
             return
         await state.clear()
-        await repo.set_pages(message.chat.id, pages)
+        await repo.set_pages(pages)
         await message.answer(f"Количество страниц обновлено: {pages}")
 
     @router.message(Command("enable"))
     async def command_enable(message: Message) -> None:
-        await repo.set_enabled(message.chat.id, True)
+        await repo.set_enabled(True)
         # Избежать лавины: пометить текущие детекции как уже уведомлённые
         try:
-            await repo.seed_notifications_for_existing(message.chat.id, provider_config.source_id)
+            await repo.seed_notifications_global_for_existing(provider_config.source_id)
         except Exception:
             LOGGER.exception("Failed to seed notifications for existing detections")
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         await message.answer("Мониторинг включён", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     @router.message(F.text.casefold() == "включить")
@@ -379,10 +377,10 @@ def create_router(
 
     @router.message(Command("disable"))
     async def command_disable(message: Message) -> None:
-        await repo.set_enabled(message.chat.id, False)
+        await repo.set_enabled(False)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         await message.answer("Мониторинг выключен", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
 
     @router.message(F.text.casefold() == "выключить")
@@ -395,7 +393,7 @@ def create_router(
 
     @router.message(Command("test"))
     async def command_test(message: Message) -> None:
-        prefs = await repo.get_preferences(message.chat.id)
+        prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
@@ -414,7 +412,7 @@ def create_router(
     return router
 
 
-def _format_preferences(prefs: ChatPreferences) -> str:
+def _format_preferences(prefs: AppPreferences) -> str:
     kws = prefs.keywords or []
     if not kws:
         kws_display = "(не заданы)"
@@ -441,7 +439,7 @@ def _format_preferences(prefs: ChatPreferences) -> str:
     return "\n".join(lines)
 
 
-async def _format_status(repo: Repository, prefs: ChatPreferences, provider_config: ProviderConfig, chat_id: int) -> str:
+async def _format_status(repo: Repository, prefs: AppPreferences, provider_config: ProviderConfig) -> str:
     status = "включён" if prefs.enabled else "выключен"
     # Сегодня с полуночи по UTC (упрощённо)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
@@ -449,10 +447,10 @@ async def _format_status(repo: Repository, prefs: ChatPreferences, provider_conf
     det_total = await repo.count_detections(source_id=provider_config.source_id)
     det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
     pending_detail = await repo.count_pending_detail()
-    notif_total = await repo.count_notifications_for_chat(chat_id, source_id=provider_config.source_id)
-    notif_today = await repo.count_notifications_for_chat(chat_id, source_id=provider_config.source_id, since=today_start)
+    notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
+    notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
     last_det = await repo.last_detection_time(source_id=provider_config.source_id)
-    last_notif = await repo.last_notification_time_for_chat(chat_id, source_id=provider_config.source_id)
+    last_notif = await repo.last_notification_time_global(source_id=provider_config.source_id)
 
     kws = prefs.keywords or []
     kws_display = "\n".join(kws[:10]) if kws else "(нет)"
