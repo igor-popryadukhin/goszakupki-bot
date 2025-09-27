@@ -27,6 +27,9 @@ services:
       GZ_ID_TEXT: ${GZ_ID_TEXT}
       GZ_ID_FROM_HREF: ${GZ_ID_FROM_HREF:-0}
       USE_PLAYWRIGHT: ${USE_PLAYWRIGHT:-0}
+      # Auth gate (optional). When set, bot requires /login
+      AUTH_LOGIN: ${AUTH_LOGIN}
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
     volumes:
       - ./data:/data
     restart: unless-stopped
