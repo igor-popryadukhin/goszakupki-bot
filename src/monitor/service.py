@@ -100,18 +100,26 @@ class MonitorService:
     ) -> int:
         sent = 0
         if page > (prefs.pages or 0):
+            LOGGER.debug("Skip: page out of range", extra={"page": page, "pages": prefs.pages})
             return 0
         if not keywords:
+            LOGGER.debug("Skip: no keywords configured")
             return 0
         matched = find_matching_keywords(listing.title, keywords)
         if not matched:
+            LOGGER.debug(
+                "Skip: title has no keyword matches",
+                extra={"title": listing.title, "id": listing.external_id},
+            )
             return 0
         # Global dedupe
         if await self._repo.has_notification_global(self._config.source_id, listing.external_id):
+            LOGGER.debug("Skip: already notified globally", extra={"id": listing.external_id})
             return 0
         text = self._format_message(listing, matched_keywords=[k.raw for k in matched])
         target = self._auth_state.authorized_target()
         if target is None:
+            LOGGER.debug("Skip: no authorized chat in session")
             return 0
         try:
             await self._bot.send_message(chat_id=target, text=text, disable_web_page_preview=False)

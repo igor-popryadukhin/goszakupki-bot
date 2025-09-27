@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, ChatSettings, Detection, Notification, User, AppSettings
+from .models import Base, Detection, Notification, AppSettings
 
 
 @dataclass(slots=True)
