@@ -49,6 +49,11 @@ class MonitorScheduler:
         if self._job is None:
             self._job = self._scheduler.add_job(self._service.run_check, trigger=trigger)
             LOGGER.info("Monitor job scheduled", extra={"interval": interval})
+            # Выполнить первую проверку немедленно, чтобы заполнить detections при первом включении
+            try:
+                await self._service.run_check()
+            except Exception:  # pragma: no cover - дополнительная устойчивость
+                LOGGER.exception("Immediate monitor run failed after scheduling")
         else:
             self._job.reschedule(trigger=trigger)
             LOGGER.info("Monitor job rescheduled", extra={"interval": interval})
