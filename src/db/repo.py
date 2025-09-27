@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy import select, or_, func
+from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -264,6 +265,41 @@ class Repository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
+
+    async def seed_notifications_for_existing(self, chat_id: int, source_id: str, *, limit: int | None = None) -> int:
+        """Mark existing detections as already notified for the chat to avoid floods on enable.
+
+        Returns number of created notifications.
+        """
+        async with self._session_factory() as session:
+            # Select external_ids for which there is no notification yet
+            now = datetime.utcnow()  # timestamp is implicit in Notification
+            stmt = (
+                select(Detection.external_id)
+                .outerjoin(
+                    Notification,
+                    and_(
+                        Notification.chat_id == chat_id,
+                        Notification.source_id == Detection.source_id,
+                        Notification.external_id == Detection.external_id,
+                    ),
+                )
+                .where(Detection.source_id == source_id, Notification.id.is_(None))
+            )
+            if limit:
+                stmt = stmt.limit(limit)
+            rows = (await session.execute(stmt)).scalars().all()
+            if not rows:
+                return 0
+            created = 0
+            for ext_id in rows:
+                session.add(Notification(chat_id=chat_id, source_id=source_id, external_id=ext_id))
+                created += 1
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+            return created
 
     async def _get_settings_for_chat(self, session: AsyncSession, chat_id: int) -> ChatSettings:
         stmt = (

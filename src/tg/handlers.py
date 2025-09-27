@@ -243,6 +243,11 @@ def create_router(
     @router.message(Command("enable"))
     async def command_enable(message: Message) -> None:
         await repo.set_enabled(message.chat.id, True)
+        # Избежать лавины: пометить текущие детекции как уже уведомлённые
+        try:
+            await repo.seed_notifications_for_existing(message.chat.id, provider_config.source_id)
+        except Exception:
+            LOGGER.exception("Failed to seed notifications for existing detections")
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences(message.chat.id)
