@@ -142,11 +142,11 @@ class GoszakupkiHttpProvider(SourceProvider):
 
     def _parse_listings(self, html: str) -> list[Listing]:
         soup = BeautifulSoup(html, "lxml")
+        listings: list[Listing] = []
         # Если включён приоритет таблицы — сразу пытаемся разобрать таблицу
         if not self._config.prefer_table:
             items = soup.select(self._config.selectors.list_item)
             total_items = len(items)
-            listings: list[Listing] = []
             skipped_no_link = 0
             skipped_no_href = 0
             skipped_no_id = 0
