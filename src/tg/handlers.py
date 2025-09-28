@@ -9,6 +9,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import hashlib
 from aiogram.filters import StateFilter
 
 from ..config import ProviderConfig, AppConfig
@@ -32,6 +33,9 @@ class KeywordsForm(StatesGroup):
 class LoginForm(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
+
+class KeywordAddForm(StatesGroup):
+    waiting_for_keyword = State()
 
 
 def create_router(
@@ -97,6 +101,7 @@ def create_router(
                 Команды:
                 /settings — открыть настройки
                 /set_keywords — задать ключевые слова сообщением
+                /keywords — управление по одному (добавление/удаление)
                 /set_interval <интервал> — например: 5m, 1h, 30s
                 /set_pages <число> — количество страниц для проверки
                 /enable — включить мониторинг
@@ -247,6 +252,11 @@ def create_router(
             reply_markup=kb,
         )
 
+    # Управление ключевыми словами по одному
+    @router.message(Command("keywords"))
+    async def command_keywords_manage(message: Message) -> None:
+        await _send_keywords_page(message, repo, page=1)
+
     @router.message(StateFilter(KeywordsForm.waiting_for_keywords), F.text & ~F.text.startswith("/"))
     async def receive_keywords(message: Message, state: FSMContext) -> None:
         # Предохранитель: не перезаписывать ключевые слова, если пользователь нажал кнопку или ввёл команду
@@ -284,7 +294,92 @@ def create_router(
 
     @router.message(F.text.casefold() == "ключевые слова")
     async def ru_set_keywords(message: Message, state: FSMContext) -> None:
-        await command_set_keywords(message, state)
+        # Покажем меню управления по одному + оставим старый способ отдельной командой
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
+                [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
+            ]
+        )
+        await message.answer("Управление ключевыми словами", reply_markup=kb)
+
+    # Старт режима замены списком из меню
+    @router.callback_query(F.data == "kw_replace")
+    async def kw_replace_cb(callback: CallbackQuery, state: FSMContext) -> None:
+        await command_set_keywords(callback.message, state)  # type: ignore[arg-type]
+        await callback.answer()
+
+    # Добавление одного ключевого слова
+    @router.callback_query(F.data == "kw_add")
+    async def kw_add_cb(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.set_state(KeywordAddForm.waiting_for_keyword)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="kw_cancel_add")]])
+        await callback.message.answer("Введите ключевое слово для добавления:", reply_markup=kb)
+        await callback.answer()
+
+    @router.callback_query(F.data == "kw_cancel_add")
+    async def kw_cancel_add_cb(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        await _send_keywords_page(callback.message, repo, page=1)  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.message(StateFilter(KeywordAddForm.waiting_for_keyword), F.text & ~F.text.startswith("/"))
+    async def kw_add_receive(message: Message, state: FSMContext) -> None:
+        text = (message.text or "").strip()
+        if not text:
+            await message.answer("Пустая строка. Введите ключевое слово или нажмите ‘Отмена’.")
+            return
+        added = await repo.add_keyword(text)
+        await state.clear()
+        if added:
+            await message.answer(f"Добавлено ключевое слово: {text}")
+        else:
+            await message.answer("Такое ключевое слово уже есть.")
+        await _send_keywords_page(message, repo, page=1)
+
+    # Пагинация и удаление
+    @router.callback_query(F.data.startswith("kw_list:"))
+    async def kw_list_cb(callback: CallbackQuery) -> None:
+        try:
+            _, page_str = (callback.data or "").split(":", 1)
+            page = int(page_str)
+            if page < 1:
+                page = 1
+        except Exception:
+            page = 1
+        await _send_keywords_page(callback.message, repo, page=page)  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("kw_del:"))
+    async def kw_del_cb(callback: CallbackQuery) -> None:
+        data = (callback.data or "")
+        # format: kw_del:<page>:<hash>
+        parts = data.split(":", 2)
+        page = 1
+        kw_hash = ""
+        if len(parts) == 3:
+            try:
+                page = int(parts[1])
+            except Exception:
+                page = 1
+            kw_hash = parts[2]
+        prefs = await repo.get_preferences()
+        candidates = (prefs.keywords if prefs else [])
+        target = None
+        for k in candidates:
+            if _kw_hash(k) == kw_hash:
+                target = k
+                break
+        if not target:
+            await callback.answer("Элемент не найден", show_alert=True)
+            return
+        removed = await repo.remove_keyword(target)
+        if removed:
+            await callback.message.answer(f"Удалено ключевое слово: {target}")
+        else:
+            await callback.message.answer("Не удалось удалить: уже удалено?")
+        await _send_keywords_page(callback.message, repo, page=page)  # type: ignore[arg-type]
+        await callback.answer()
 
     @router.message(Command("set_interval"))
     async def command_set_interval(message: Message, command: CommandObject) -> None:
@@ -478,3 +573,42 @@ async def _format_status(repo: Repository, prefs: AppPreferences, provider_confi
         kws_display,
     ])
     return "\n".join(lines)
+
+
+# Helpers for keywords management
+def _kw_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+
+
+async def _send_keywords_page(target: Message, repo: Repository, *, page: int, per_page: int = 5) -> None:
+    prefs = await repo.get_preferences()
+    items = prefs.keywords if prefs else []
+    total = len(items)
+    if total == 0:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")]]
+        )
+        await target.answer("Ключевых слов пока нет", reply_markup=kb)
+        return
+    # clamp page
+    max_page = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, max_page))
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    view = items[start:end]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, k in enumerate(view, start=start + 1):
+        label = f"❌ {idx}. {k}"
+        if len(label) > 64:
+            label = label[:61] + "…"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"kw_del:{page}:{_kw_hash(k)}")])
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"kw_list:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"kw_list:{page}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="➡", callback_data=f"kw_list:{page+1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await target.answer("Текущие ключевые слова:", reply_markup=kb)

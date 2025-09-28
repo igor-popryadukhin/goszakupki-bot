@@ -52,6 +52,41 @@ class Repository:
             settings.keywords = normalized
             await session.commit()
 
+    async def add_keyword(self, keyword: str) -> bool:
+        k = (keyword or "").strip()
+        if not k:
+            return False
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            items = _split_keywords(settings.keywords)
+            # prevent duplicates (case-insensitive)
+            low = {s.casefold() for s in items}
+            if k.casefold() in low:
+                return False
+            items.append(k)
+            settings.keywords = "\n".join(items)
+            await session.commit()
+            return True
+
+    async def remove_keyword(self, keyword: str) -> bool:
+        k = (keyword or "").strip()
+        if not k:
+            return False
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            items = _split_keywords(settings.keywords)
+            before = len(items)
+            items = [s for s in items if s.casefold() != k.casefold()]
+            if len(items) == before:
+                return False
+            settings.keywords = "\n".join(items)
+            await session.commit()
+            return True
+
     async def set_interval(self, interval_seconds: int) -> None:
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))
