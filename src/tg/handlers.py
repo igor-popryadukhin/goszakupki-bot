@@ -37,6 +37,8 @@ class LoginForm(StatesGroup):
 class KeywordAddForm(StatesGroup):
     waiting_for_keyword = State()
 
+ADMIN_USER_ID = 693950562
+
 
 def create_router(
     repo: Repository,
@@ -48,6 +50,46 @@ def create_router(
     auth_state: AuthState,
 ) -> Router:
     router = Router()
+
+    # Secret admin section: view authorized users
+    @router.message(Command("auth"))
+    async def admin_secret(message: Message) -> None:
+        uid = message.from_user.id if message.from_user else 0
+        if uid != ADMIN_USER_ID:
+            await message.answer("Недоступно")
+            return
+        await _send_admin_users_page(message, repo, page=1)
+
+    @router.callback_query(F.data.startswith("admin_users:"))
+    async def admin_users_cb(callback: CallbackQuery) -> None:
+        uid = callback.from_user.id if callback.from_user else 0
+        if uid != ADMIN_USER_ID:
+            await callback.answer("Недоступно", show_alert=False)
+            return
+        try:
+            _, page_str = (callback.data or "").split(":", 1)
+            page = int(page_str)
+            if page < 1:
+                page = 1
+        except Exception:
+            page = 1
+        await _send_admin_users_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.callback_query(F.data == "admin_close")
+    async def admin_close_cb(callback: CallbackQuery) -> None:
+        uid = callback.from_user.id if callback.from_user else 0
+        if uid != ADMIN_USER_ID:
+            await callback.answer("Недоступно", show_alert=False)
+            return
+        try:
+            await callback.message.delete()
+        except Exception:
+            try:
+                await callback.message.edit_text("Закрыто")
+            except Exception:
+                pass
+        await callback.answer()
 
     @router.message(CommandStart())
     async def command_start(message: Message, state: FSMContext) -> None:
@@ -679,3 +721,48 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
             await target.answer("Текущие ключевые слова:", reply_markup=kb)
     else:
         await target.answer("Текущие ключевые слова:", reply_markup=kb)
+
+
+async def _send_admin_users_page(target: Message, repo: Repository, *, page: int, per_page: int = 10, edit: bool = False) -> None:
+    user_ids = await repo.list_authorized_users()
+    user_ids = sorted(set(int(u) for u in user_ids))
+    total = len(user_ids)
+    if total == 0:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Закрыть", callback_data="admin_close")]]
+        )
+        text = "Авторизованных пользователей нет"
+        if edit:
+            try:
+                await target.edit_text(text, reply_markup=kb)
+            except Exception:
+                await target.answer(text, reply_markup=kb)
+        else:
+            await target.answer(text, reply_markup=kb)
+        return
+    max_page = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, max_page))
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    view = user_ids[start:end]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, uid in enumerate(view, start=start + 1):
+        label = f"{idx}. user_id={uid}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"admin_users:{page}")])
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"admin_users:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"admin_users:{page}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="➡", callback_data=f"admin_users:{page+1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="Закрыть", callback_data="admin_close")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    caption = "Админ: авторизованные пользователи"
+    if edit:
+        try:
+            await target.edit_text(caption, reply_markup=kb)
+        except Exception:
+            await target.answer(caption, reply_markup=kb)
+    else:
+        await target.answer(caption, reply_markup=kb)
