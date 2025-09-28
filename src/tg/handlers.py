@@ -348,6 +348,7 @@ def create_router(
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
+                [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
             ]
@@ -406,6 +407,7 @@ def create_router(
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
+                [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
             ]
@@ -414,6 +416,18 @@ def create_router(
             await callback.message.edit_text("Управление ключевыми словами", reply_markup=kb)
         except Exception:
             await callback.message.answer("Управление ключевыми словами", reply_markup=kb)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("kw_list_a:"))
+    async def kw_list_alpha_cb(callback: CallbackQuery) -> None:
+        try:
+            _, page_str = (callback.data or "").split(":", 1)
+            page = int(page_str)
+            if page < 1:
+                page = 1
+        except Exception:
+            page = 1
+        await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
         await callback.answer()
 
     @router.callback_query(F.data.startswith("kw_clear_all:"))
@@ -482,6 +496,33 @@ def create_router(
         else:
             await callback.answer("Не удалось удалить", show_alert=False)
         await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
+
+    @router.callback_query(F.data.startswith("kw_del_a:"))
+    async def kw_del_alpha_cb(callback: CallbackQuery) -> None:
+        data = (callback.data or "")
+        # format: kw_del_a:<page>:<hash>
+        parts = data.split(":", 2)
+        page = 1
+        kw_hash = ""
+        if len(parts) == 3:
+            try:
+                page = int(parts[1])
+            except Exception:
+                page = 1
+            kw_hash = parts[2]
+        prefs = await repo.get_preferences()
+        candidates = (prefs.keywords if prefs else [])
+        target = None
+        for k in candidates:
+            if _kw_hash(k) == kw_hash:
+                target = k
+                break
+        if not target:
+            await callback.answer("Элемент не найден", show_alert=True)
+            return
+        removed = await repo.remove_keyword(target)
+        await callback.answer("Удалено" if removed else "Не удалось удалить", show_alert=False)
+        await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
     @router.message(Command("set_interval"))
     async def command_set_interval(message: Message, command: CommandObject) -> None:
@@ -741,6 +782,51 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
     else:
         await target.answer("Текущие ключевые слова:", reply_markup=kb)
 
+
+async def _send_keywords_page_alpha(target: Message, repo: Repository, *, page: int, per_page: int = 10, edit: bool = False) -> None:
+    prefs = await repo.get_preferences()
+    items = sorted((prefs.keywords if prefs else []), key=lambda s: s.casefold())
+    total = len(items)
+    if total == 0:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")]]
+        )
+        if edit:
+            try:
+                await target.edit_text("Ключевых слов пока нет", reply_markup=kb)
+            except Exception:
+                await target.answer("Ключевых слов пока нет", reply_markup=kb)
+        else:
+            await target.answer("Ключевых слов пока нет", reply_markup=kb)
+        return
+    max_page = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, max_page))
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    view = items[start:end]
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, k in enumerate(view, start=start + 1):
+        label = f"❌ {idx}. {k}"
+        if len(label) > 64:
+            label = label[:61] + "…"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"kw_del_a:{page}:{_kw_hash(k)}")])
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"kw_list_a:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"kw_list_a:{page}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="➡", callback_data=f"kw_list_a:{page+1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    header = "Ключевые слова (А–Я):"
+    if edit:
+        try:
+            await target.edit_text(header, reply_markup=kb)
+        except Exception:
+            await target.answer(header, reply_markup=kb)
+    else:
+        await target.answer(header, reply_markup=kb)
 
 async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_config: ProviderConfig) -> None:
     uid = message.from_user.id if message.from_user else 0
