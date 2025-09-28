@@ -349,6 +349,7 @@ def create_router(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
                 [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
+                [InlineKeyboardButton(text="📜 Показать по алфавиту", callback_data="kw_show_all_a")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
             ]
@@ -408,6 +409,7 @@ def create_router(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
                 [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
+                [InlineKeyboardButton(text="📜 Показать по алфавиту", callback_data="kw_show_all_a")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
             ]
@@ -416,6 +418,25 @@ def create_router(
             await callback.message.edit_text("Управление ключевыми словами", reply_markup=kb)
         except Exception:
             await callback.message.answer("Управление ключевыми словами", reply_markup=kb)
+        await callback.answer()
+
+    @router.callback_query(F.data == "kw_show_all_a")
+    async def kw_show_all_alpha_cb(callback: CallbackQuery) -> None:
+        prefs = await repo.get_preferences()
+        items = sorted((prefs.keywords if prefs else []), key=lambda s: s.casefold())
+        if not items:
+            await callback.answer("Пусто", show_alert=False)
+            return
+        # Формируем и отправляем несколько сообщений при необходимости
+        header = "Ключевые слова (полный список, А–Я):"
+        chunks = _chunk_lines(items, header=header)
+        for i, text in enumerate(chunks):
+            if i == len(chunks) - 1:
+                # В последний добавим кнопку Назад
+                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")]])
+                await callback.message.answer(text, reply_markup=kb)
+            else:
+                await callback.message.answer(text)
         await callback.answer()
 
     @router.callback_query(F.data.startswith("kw_list_a:"))
@@ -827,6 +848,28 @@ async def _send_keywords_page_alpha(target: Message, repo: Repository, *, page: 
             await target.answer(header, reply_markup=kb)
     else:
         await target.answer(header, reply_markup=kb)
+
+
+def _chunk_lines(lines: list[str], *, header: str = "", max_chars: int = 3500) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    base_len = len(header) + (1 if header else 0)
+    cur_len = base_len
+    for idx, line in enumerate(lines, start=1):
+        entry = f"{idx}. {line}"
+        add_len = len(entry) + 1
+        if current and cur_len + add_len > max_chars:
+            text = (header + "\n" if header else "") + "\n".join(current)
+            chunks.append(text)
+            current = [entry]
+            cur_len = base_len + len(entry) + 1
+        else:
+            current.append(entry)
+            cur_len += add_len
+    if current:
+        text = (header + "\n" if header else "") + "\n".join(current)
+        chunks.append(text)
+    return chunks
 
 async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_config: ProviderConfig) -> None:
     uid = message.from_user.id if message.from_user else 0
