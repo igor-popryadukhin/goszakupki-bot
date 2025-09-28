@@ -87,6 +87,14 @@ class Repository:
             await session.commit()
             return True
 
+    async def clear_keywords(self) -> None:
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            settings.keywords = ""
+            await session.commit()
+
     async def set_interval(self, interval_seconds: int) -> None:
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))

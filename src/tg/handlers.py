@@ -299,6 +299,7 @@ def create_router(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
+                [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
             ]
         )
         await message.answer("Управление ключевыми словами", reply_markup=kb)
@@ -349,6 +350,43 @@ def create_router(
             page = 1
         await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
         await callback.answer()
+
+    @router.callback_query(F.data.startswith("kw_clear_all:"))
+    async def kw_clear_all_cb(callback: CallbackQuery) -> None:
+        # Ask for confirmation in-place
+        data = (callback.data or "")
+        page = 1
+        try:
+            _, page_str = data.split(":", 1)
+            page = int(page_str)
+        except Exception:
+            page = 1
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Подтвердить очистку", callback_data=f"kw_clear_all_confirm:{page}"),
+                    InlineKeyboardButton(text="Отмена", callback_data=f"kw_list:{page}"),
+                ]
+            ]
+        )
+        try:
+            await callback.message.edit_text("Удалить все ключевые слова?", reply_markup=kb)
+        except Exception:
+            await callback.message.answer("Удалить все ключевые слова?", reply_markup=kb)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("kw_clear_all_confirm:"))
+    async def kw_clear_all_confirm_cb(callback: CallbackQuery) -> None:
+        data = (callback.data or "")
+        page = 1
+        try:
+            _, page_str = data.split(":", 1)
+            page = int(page_str)
+        except Exception:
+            page = 1
+        await repo.clear_keywords()
+        await callback.answer("Очищено")
+        await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
     @router.callback_query(F.data.startswith("kw_del:"))
     async def kw_del_cb(callback: CallbackQuery) -> None:
