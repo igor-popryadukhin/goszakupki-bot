@@ -757,7 +757,7 @@ def _kw_hash(text: str) -> str:
 
 async def _send_keywords_page(target: Message, repo: Repository, *, page: int, per_page: int = 5, edit: bool = False) -> None:
     prefs = await repo.get_preferences()
-    items = prefs.keywords if prefs else []
+    items = sorted((prefs.keywords if prefs else []), key=lambda s: s.casefold())
     total = len(items)
     if total == 0:
         kb = InlineKeyboardMarkup(
@@ -792,14 +792,15 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
     rows.append(nav)
     rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    header = "Текущие ключевые слова (А–Я):"
     if edit:
         try:
-            await target.edit_text("Текущие ключевые слова:", reply_markup=kb)
+            await target.edit_text(header, reply_markup=kb)
         except Exception:
             # fallback to sending new message if edit fails (e.g., old message not found)
-            await target.answer("Текущие ключевые слова:", reply_markup=kb)
+            await target.answer(header, reply_markup=kb)
     else:
-        await target.answer("Текущие ключевые слова:", reply_markup=kb)
+        await target.answer(header, reply_markup=kb)
 
 
 async def _send_keywords_page_alpha(target: Message, repo: Repository, *, page: int, per_page: int = 10, edit: bool = False) -> None:
