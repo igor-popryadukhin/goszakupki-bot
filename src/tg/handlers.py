@@ -745,24 +745,46 @@ async def _send_admin_users_page(target: Message, repo: Repository, *, page: int
     start = (page - 1) * per_page
     end = min(start + per_page, total)
     view = user_ids[start:end]
-    rows: list[list[InlineKeyboardButton]] = []
+
+    # Build text with resolved names
+    lines: list[str] = ["Админ: авторизованные пользователи", ""]
     for idx, uid in enumerate(view, start=start + 1):
-        label = f"{idx}. user_id={uid}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"admin_users:{page}")])
+        label = await _format_user_label(target, uid)
+        lines.append(f"{idx}. {label}")
+    lines.append("")
+    lines.append(f"Страница {page}/{max_page}")
+    text = "\n".join(lines)
+
     nav: list[InlineKeyboardButton] = []
     if page > 1:
         nav.append(InlineKeyboardButton(text="⬅", callback_data=f"admin_users:{page-1}"))
     nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"admin_users:{page}"))
     if page < max_page:
         nav.append(InlineKeyboardButton(text="➡", callback_data=f"admin_users:{page+1}"))
-    rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Закрыть", callback_data="admin_close")])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    caption = "Админ: авторизованные пользователи"
+    kb = InlineKeyboardMarkup(inline_keyboard=[nav, [InlineKeyboardButton(text="Закрыть", callback_data="admin_close")]])
+
     if edit:
         try:
-            await target.edit_text(caption, reply_markup=kb)
+            await target.edit_text(text, reply_markup=kb)
         except Exception:
-            await target.answer(caption, reply_markup=kb)
+            await target.answer(text, reply_markup=kb)
     else:
-        await target.answer(caption, reply_markup=kb)
+        await target.answer(text, reply_markup=kb)
+
+
+async def _format_user_label(target: Message, user_id: int) -> str:
+    try:
+        chat = await target.bot.get_chat(user_id)
+        uname = getattr(chat, "username", None)
+        first = getattr(chat, "first_name", None)
+        last = getattr(chat, "last_name", None)
+        name = None
+        if uname:
+            name = f"@{uname}"
+        elif first or last:
+            name = " ".join([p for p in [first, last] if p])
+        else:
+            name = "(без имени)"
+        return f"{name} — id {user_id}"
+    except Exception:
+        return f"id {user_id}"
