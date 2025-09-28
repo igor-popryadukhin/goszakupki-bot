@@ -380,7 +380,7 @@ def create_router(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(text="✅ Подтвердить очистку", callback_data=f"kw_clear_all_confirm:{page}"),
-                    InlineKeyboardButton(text="Отмена", callback_data=f"kw_list:{page}"),
+                    InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu"),
                 ]
             ]
         )
