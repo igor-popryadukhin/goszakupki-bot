@@ -320,7 +320,7 @@ def create_router(
     @router.callback_query(F.data == "kw_cancel_add")
     async def kw_cancel_add_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        await _send_keywords_page(callback.message, repo, page=1)  # type: ignore[arg-type]
+        await _send_keywords_page(callback.message, repo, page=1, edit=True)  # type: ignore[arg-type]
         await callback.answer()
 
     @router.message(StateFilter(KeywordAddForm.waiting_for_keyword), F.text & ~F.text.startswith("/"))
@@ -347,7 +347,7 @@ def create_router(
                 page = 1
         except Exception:
             page = 1
-        await _send_keywords_page(callback.message, repo, page=page)  # type: ignore[arg-type]
+        await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
         await callback.answer()
 
     @router.callback_query(F.data.startswith("kw_del:"))
@@ -375,11 +375,10 @@ def create_router(
             return
         removed = await repo.remove_keyword(target)
         if removed:
-            await callback.message.answer(f"Удалено ключевое слово: {target}")
+            await callback.answer("Удалено", show_alert=False)
         else:
-            await callback.message.answer("Не удалось удалить: уже удалено?")
-        await _send_keywords_page(callback.message, repo, page=page)  # type: ignore[arg-type]
-        await callback.answer()
+            await callback.answer("Не удалось удалить", show_alert=False)
+        await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
     @router.message(Command("set_interval"))
     async def command_set_interval(message: Message, command: CommandObject) -> None:
@@ -580,7 +579,7 @@ def _kw_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
 
 
-async def _send_keywords_page(target: Message, repo: Repository, *, page: int, per_page: int = 5) -> None:
+async def _send_keywords_page(target: Message, repo: Repository, *, page: int, per_page: int = 5, edit: bool = False) -> None:
     prefs = await repo.get_preferences()
     items = prefs.keywords if prefs else []
     total = len(items)
@@ -588,7 +587,13 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")]]
         )
-        await target.answer("Ключевых слов пока нет", reply_markup=kb)
+        if edit:
+            try:
+                await target.edit_text("Ключевых слов пока нет", reply_markup=kb)
+            except Exception:
+                await target.answer("Ключевых слов пока нет", reply_markup=kb)
+        else:
+            await target.answer("Ключевых слов пока нет", reply_markup=kb)
         return
     # clamp page
     max_page = max(1, (total + per_page - 1) // per_page)
@@ -611,4 +616,11 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
     rows.append(nav)
     rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    await target.answer("Текущие ключевые слова:", reply_markup=kb)
+    if edit:
+        try:
+            await target.edit_text("Текущие ключевые слова:", reply_markup=kb)
+        except Exception:
+            # fallback to sending new message if edit fails (e.g., old message not found)
+            await target.answer("Текущие ключевые слова:", reply_markup=kb)
+    else:
+        await target.answer("Текущие ключевые слова:", reply_markup=kb)
