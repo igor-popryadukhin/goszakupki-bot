@@ -110,6 +110,7 @@ def create_router(
             default_interval=provider_config.check_interval_default,
             default_pages=provider_config.pages_default,
         )
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(
             dedent(
                 """
@@ -125,7 +126,7 @@ def create_router(
                 • /help — список команд
                 """
             ).strip(),
-            reply_markup=main_menu_keyboard(prefs.enabled),
+            reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin),
         )
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
@@ -220,7 +221,8 @@ def create_router(
             await message.answer("Сначала отправь /start")
             return
         text = await _format_status(repo, prefs, provider_config)
-        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
@@ -243,7 +245,8 @@ def create_router(
     @router.message(F.text.casefold() == "назад")
     async def ru_back(message: Message) -> None:
         prefs = await repo.get_preferences()
-        await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     # Очистка детекций: подтверждение через inline-кнопки
     @router.message(F.text.casefold() == "очистить детекции")
@@ -282,7 +285,8 @@ def create_router(
     async def command_cancel_any(message: Message, state: FSMContext) -> None:
         await state.clear()
         prefs = await repo.get_preferences()
-        await message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     @router.message(Command("set_keywords"))
     async def command_set_keywords(message: Message, state: FSMContext) -> None:
@@ -327,13 +331,15 @@ def create_router(
         await repo.update_keywords(lines)
         await state.clear()
         prefs2 = await repo.get_preferences()
-        await message.answer("Ключевые слова обновлены", reply_markup=main_menu_keyboard(prefs2.enabled if prefs2 else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer("Ключевые слова обновлены", reply_markup=main_menu_keyboard(prefs2.enabled if prefs2 else False, admin=is_admin))
 
     @router.callback_query(F.data == "cancel_keywords")
     async def cancel_keywords_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         prefs = await repo.get_preferences()
-        await callback.message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(callback.from_user and callback.from_user.id == ADMIN_USER_ID)
+        await callback.message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
         await callback.answer()
 
     @router.message(F.text.casefold() == "ключевые слова")
@@ -491,7 +497,8 @@ def create_router(
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
-        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     # Обработчик /cancel ниже оставлен для совместимости (глобальный выше перехватит)
 
@@ -528,7 +535,8 @@ def create_router(
             return
         await repo.set_pages(pages)
         prefs = await repo.get_preferences()
-        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     # Кнопка: Страницы (запрос значения)
     @router.message(F.text.casefold() == "страницы")
@@ -560,7 +568,8 @@ def create_router(
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
-        await message.answer("Мониторинг включён", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer("Мониторинг включён", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     @router.message(F.text.casefold() == "включить")
     async def ru_enable(message: Message) -> None:
@@ -572,7 +581,8 @@ def create_router(
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
-        await message.answer("Мониторинг выключен", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False))
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer("Мониторинг выключен", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
 
     @router.message(F.text.casefold() == "выключить")
     async def ru_disable(message: Message) -> None:
@@ -597,6 +607,15 @@ def create_router(
             ]
         )
         await message.answer(text)
+
+    # --- Admin broadcast test to all authorized recipients ---
+    @router.message(F.text.casefold() == "тест всем")
+    async def ru_admin_broadcast_test(message: Message) -> None:
+        await _admin_broadcast_test(message, auth_state, provider_config)
+
+    @router.message(Command("broadcast_test"))
+    async def command_broadcast_test(message: Message) -> None:
+        await _admin_broadcast_test(message, auth_state, provider_config)
 
     # Команды управления детсканером доступны только через переключатель мониторинга
 
@@ -721,6 +740,35 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
             await target.answer("Текущие ключевые слова:", reply_markup=kb)
     else:
         await target.answer("Текущие ключевые слова:", reply_markup=kb)
+
+
+async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_config: ProviderConfig) -> None:
+    uid = message.from_user.id if message.from_user else 0
+    if uid != ADMIN_USER_ID:
+        await message.answer("Недоступно")
+        return
+    # Gather targets
+    getter = getattr(auth_state, "all_targets", None)
+    targets = list(getter()) if callable(getter) else []
+    if not targets:
+        await message.answer("Нет авторизованных получателей")
+        return
+    text = "\n".join(
+        [
+            f"🛒 Тестовое уведомление ({provider_config.source_id})",
+            "Название: Пример закупки",
+            f"Ссылка: {provider_config.base_url}",
+            "Номер: auc0000000000",
+        ]
+    )
+    sent = 0
+    for chat_id in sorted(set(targets)):
+        try:
+            await message.bot.send_message(chat_id=chat_id, text=text)
+            sent += 1
+        except Exception:
+            LOGGER.exception("Admin broadcast send failed", extra={"chat_id": chat_id})
+    await message.answer(f"Отправлено: {sent}")
 
 
 async def _send_admin_users_page(target: Message, repo: Repository, *, page: int, per_page: int = 10, edit: bool = False) -> None:
