@@ -351,6 +351,21 @@ def create_router(
         await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
         await callback.answer()
 
+    @router.callback_query(F.data == "kw_back_menu")
+    async def kw_back_menu_cb(callback: CallbackQuery) -> None:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
+                [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
+                [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
+            ]
+        )
+        try:
+            await callback.message.edit_text("Управление ключевыми словами", reply_markup=kb)
+        except Exception:
+            await callback.message.answer("Управление ключевыми словами", reply_markup=kb)
+        await callback.answer()
+
     @router.callback_query(F.data.startswith("kw_clear_all:"))
     async def kw_clear_all_cb(callback: CallbackQuery) -> None:
         # Ask for confirmation in-place
@@ -623,7 +638,7 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
     total = len(items)
     if total == 0:
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")]]
+            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")]]
         )
         if edit:
             try:
@@ -652,7 +667,7 @@ async def _send_keywords_page(target: Message, repo: Repository, *, page: int, p
     if page < max_page:
         nav.append(InlineKeyboardButton(text="➡", callback_data=f"kw_list:{page+1}"))
     rows.append(nav)
-    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add")])
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="⬅ Назад", callback_data="kw_back_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     if edit:
         try:
