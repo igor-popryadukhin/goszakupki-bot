@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, Detection, Notification, AppSettings, AuthSession, AuthorizedChat
+from .models import Base, Detection, Notification, AppSettings, AuthSession, AuthorizedChat, AuthorizedUser
 
 
 @dataclass(slots=True)
@@ -349,6 +349,33 @@ class Repository:
     async def clear_all_authorized_chats(self) -> None:
         async with self._session_factory() as session:
             await session.execute(delete(AuthorizedChat))
+            await session.commit()
+
+    # Authorized users (by Telegram user_id)
+    async def list_authorized_users(self) -> list[int]:
+        async with self._session_factory() as session:
+            rows = (await session.execute(select(AuthorizedUser.user_id))).scalars().all()
+            return [int(r) for r in rows]
+
+    async def add_authorized_user(self, user_id: int) -> None:
+        async with self._session_factory() as session:
+            if await session.get(AuthorizedUser, user_id) is None:
+                session.add(AuthorizedUser(user_id=user_id))
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+
+    async def remove_authorized_user(self, user_id: int) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(AuthorizedUser, user_id)
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
+
+    async def clear_all_authorized_users(self) -> None:
+        async with self._session_factory() as session:
+            await session.execute(delete(AuthorizedUser))
             await session.commit()
 
     async def seed_notifications_global_for_existing(self, source_id: str, *, limit: int | None = None) -> int:

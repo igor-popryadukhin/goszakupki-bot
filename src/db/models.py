@@ -39,6 +39,13 @@ class AuthorizedChat(Base):
     chat_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
 
 
+class AuthorizedUser(Base):
+    __tablename__ = "authorized_users"
+
+    # Authorize by Telegram user id (stable across devices and chats)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+
+
 class Detection(Base):
     __tablename__ = "detections"
     __table_args__ = (UniqueConstraint("source_id", "external_id", name="ux_detection"),)

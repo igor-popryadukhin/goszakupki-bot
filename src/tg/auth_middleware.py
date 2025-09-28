@@ -34,13 +34,18 @@ class AuthMiddleware(BaseMiddleware):
         
         chat_id = None
         text = ""
+        user_id = None
         if isinstance(event, Message):
             chat_id = event.chat.id
             text = (event.text or "").strip()
+            if event.from_user:
+                user_id = event.from_user.id
         elif isinstance(event, CallbackQuery):
             if event.message:
                 chat_id = event.message.chat.id
             text = (event.data or "").strip()
+            if event.from_user:
+                user_id = event.from_user.id
 
         # Allow only auth-related commands before login
         if isinstance(event, Message):
@@ -61,7 +66,7 @@ class AuthMiddleware(BaseMiddleware):
         if chat_id is None:
             return await handler(event, data)
 
-        if self._state.is_authorized(chat_id):
+        if self._state.is_authorized(chat_id, user_id=user_id):
             return await handler(event, data)
 
         if isinstance(event, Message):
