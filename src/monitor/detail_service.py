@@ -84,7 +84,12 @@ class DetailScanService:
                 matched = find_matching_keywords(item.title, keywords)
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
-                targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
+                # Collect all target chat ids: authorized chats plus user_ids (for private chats)
+                targets_getter = getattr(self._auth_state, "all_targets", None)
+                if callable(targets_getter):
+                    targets = list(targets_getter())
+                else:
+                    targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
                 if not targets:
                     LOGGER.debug("Detail skip: no authorized chats in session")
                 else:

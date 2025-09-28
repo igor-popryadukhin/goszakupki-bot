@@ -56,6 +56,12 @@ class AuthState:
     def authorized_targets(self) -> list[int]:
         return sorted(self.authorized_chat_ids)
 
+    def all_targets(self) -> list[int]:
+        targets: set[int] = set(self.authorized_chat_ids)
+        # In private chats user_id == chat_id, so we can send using user ids too
+        targets.update(self.authorized_user_ids)
+        return sorted(targets)
+
     async def logout(self) -> None:
         # Clear all authorizations
         self.authorized_chat_ids.clear()
