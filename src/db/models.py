@@ -32,6 +32,13 @@ class AuthSession(Base):
     chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class AuthorizedChat(Base):
+    __tablename__ = "authorized_chats"
+
+    # Allow multiple authorized chats; one row per chat
+    chat_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+
+
 class Detection(Base):
     __tablename__ = "detections"
     __table_args__ = (UniqueConstraint("source_id", "external_id", name="ux_detection"),)

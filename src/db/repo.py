@@ -9,7 +9,7 @@ from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, Detection, Notification, AppSettings, AuthSession
+from .models import Base, Detection, Notification, AppSettings, AuthSession, AuthorizedChat
 
 
 @dataclass(slots=True)
@@ -257,6 +257,8 @@ class Repository:
 
     # --- Persisted auth session (single-user global auth) ---
 
+    # --- Authorization (multi-chat). Legacy single-row helpers retained for migration ---
+
     async def get_authorized_chat_id(self) -> int | None:
         async with self._session_factory() as session:
             row = await session.scalar(select(AuthSession).where(AuthSession.id == 1))
@@ -278,6 +280,33 @@ class Repository:
             if row is not None:
                 row.chat_id = None
                 await session.commit()
+
+    # New multi-chat API
+    async def list_authorized_chats(self) -> list[int]:
+        async with self._session_factory() as session:
+            rows = (await session.execute(select(AuthorizedChat.chat_id))).scalars().all()
+            return [int(r) for r in rows]
+
+    async def add_authorized_chat(self, chat_id: int) -> None:
+        async with self._session_factory() as session:
+            if await session.get(AuthorizedChat, chat_id) is None:
+                session.add(AuthorizedChat(chat_id=chat_id))
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+
+    async def remove_authorized_chat(self, chat_id: int) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(AuthorizedChat, chat_id)
+            if row is not None:
+                await session.delete(row)
+                await session.commit()
+
+    async def clear_all_authorized_chats(self) -> None:
+        async with self._session_factory() as session:
+            await session.execute(delete(AuthorizedChat))
+            await session.commit()
 
     async def seed_notifications_global_for_existing(self, source_id: str, *, limit: int | None = None) -> int:
         """Mark existing detections as already notified for the chat to avoid floods on enable.

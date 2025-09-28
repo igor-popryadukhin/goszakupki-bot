@@ -84,15 +84,16 @@ class DetailScanService:
                 matched = find_matching_keywords(item.title, keywords)
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
-                chat_id = self._auth_state.authorized_target()
-                if chat_id is None:
-                    LOGGER.debug("Detail skip: no authorized chat in session")
+                targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
+                if not targets:
+                    LOGGER.debug("Detail skip: no authorized chats in session")
                 else:
-                    try:
-                        await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
-                        notified += 1
-                    except Exception:
-                        LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
+                    for chat_id in targets:
+                        try:
+                            await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
+                            notified += 1
+                        except Exception:
+                            LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
                 if notified > 0:
                     await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
 
