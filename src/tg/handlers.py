@@ -348,7 +348,6 @@ def create_router(
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
-                [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
                 [InlineKeyboardButton(text="📜 Показать по алфавиту", callback_data="kw_show_all_a")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
@@ -408,7 +407,6 @@ def create_router(
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="➕ Добавить", callback_data="kw_add"), InlineKeyboardButton(text="📃 Список", callback_data="kw_list:1")],
-                [InlineKeyboardButton(text="🔤 По алфавиту", callback_data="kw_list_a:1")],
                 [InlineKeyboardButton(text="📜 Показать по алфавиту", callback_data="kw_show_all_a")],
                 [InlineKeyboardButton(text="✏ Заменить списком", callback_data="kw_replace")],
                 [InlineKeyboardButton(text="🗑 Очистить все", callback_data="kw_clear_all:1")],
