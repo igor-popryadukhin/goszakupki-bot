@@ -9,12 +9,13 @@ from datetime import datetime, timedelta
 from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
+from .detail_llm_integration import DetailLLMIntegrationMixin
 from .match import Keyword, compile_keywords, find_matching_keywords
 
 LOGGER = logging.getLogger(__name__)
 
 
-class DetailScanService:
+class DetailScanService(DetailLLMIntegrationMixin):
     def __init__(
         self,
         *,
@@ -30,6 +31,7 @@ class DetailScanService:
         self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
+        self._init_llm_client()  # <-- ДОБАВИТЬ ЭТУ СТРОКУ
 
     async def run_scan(self) -> None:
         async with self._lock:
@@ -82,7 +84,13 @@ class DetailScanService:
                 matched = find_matching_keywords(text, keywords)
             if not matched and item.title:
                 matched = find_matching_keywords(item.title, keywords)
-            if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
+
+            # LLM проверка релевантности - ДОБАВИТЬ ЭТИ 2 СТРОКИ
+            llm_relevant = await self._llm_relevance_check(
+                item.html or "", text or "", [kw.raw for kw in keywords]
+            )
+
+            if matched and llm_relevant and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
                 # Collect all target chat ids: authorized chats plus user_ids (for private chats)
                 targets_getter = getattr(self._auth_state, "all_targets", None)
