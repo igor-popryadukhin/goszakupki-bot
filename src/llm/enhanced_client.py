@@ -1,3 +1,4 @@
+from .prompt_manager import PromptManager
 from typing import List, Dict, Any
 import re
 from bs4 import BeautifulSoup
@@ -9,13 +10,18 @@ class EnhancedLLMClient:
         self.provider = provider
         self.model = model
         self.api_key = api_key
+        self.prompt_manager = PromptManager()
 
     async def analyze_relevance(self, html_content: str, keywords: List[str]) -> Dict[str, Any]:
         """Анализ релевантности документа через LLM"""
         cleaned_content = self._clean_html_content(html_content)
 
-        # Формируем промпт
-        prompt = self._create_relevance_prompt(cleaned_content, keywords)
+        # Используем промпт из менеджера
+        prompt = self.prompt_manager.get_prompt(
+            "relevance_analysis",
+            keywords="\n".join(f"- {kw}" for kw in keywords),
+            content=cleaned_content[:3000]
+        )
 
         try:
             # Используем существующий LLMClient
@@ -47,28 +53,6 @@ class EnhancedLLMClient:
             cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
             cleaned = re.sub(r'\s+', ' ', cleaned)
             return cleaned.strip()[:max_length]
-
-    def _create_relevance_prompt(self, content: str, keywords: List[str]) -> str:
-        """Создание промпта для анализа"""
-        keywords_str = "\n".join(f"- {kw}" for kw in keywords)
-
-        return f"""Проанализируй документ о государственных закупках и определи релевантность ключевым темам:
-
-Ключевые темы:
-{keywords_str}
-
-Верни ответ ТОЛЬКО в формате JSON:
-
-{{
-    "relevant": true/false,
-    "confidence": число от 0 до 1,
-    "matched_keywords": ["список", "совпавших", "слов"],
-    "summary": "краткое описание",
-    "reasoning": "обоснование"
-}}
-
-Документ:
-{content[:3000]}"""
 
     def _parse_relevance_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Парсинг результата LLM анализа"""
