@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Iterable, Sequence
 
-from sqlalchemy import select, or_, func, delete
+from sqlalchemy import select, or_, func, delete, text
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from .models import Base, Detection, Notification, AppSettings, AuthSession, AuthorizedChat, AuthorizedUser
 
@@ -15,32 +16,47 @@ from .models import Base, Detection, Notification, AppSettings, AuthSession, Aut
 @dataclass(slots=True)
 class AppPreferences:
     keywords: list[str]
+    semantic_queries: list[str]
     interval_seconds: int
     pages: int
     enabled: bool
+    semantic_threshold: float
 
 
 class Repository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def get_or_create_settings(self, *, default_interval: int, default_pages: int) -> AppPreferences:
+    async def get_or_create_settings(
+        self,
+        *,
+        default_interval: int,
+        default_pages: int,
+        default_semantic_threshold: float,
+        default_semantic_queries: Sequence[str] | None = None,
+    ) -> AppPreferences:
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))
             if settings is None:
+                semantic_default = "\n".join(q.strip() for q in (default_semantic_queries or []) if q.strip())
                 settings = AppSettings(
                     keywords="",
+                    semantic_queries=semantic_default,
+                    semantic_threshold=default_semantic_threshold,
                     interval_seconds=default_interval,
                     pages=default_pages,
                     enabled=False,
                 )
                 session.add(settings)
                 await session.commit()
+            semantic_threshold = getattr(settings, "semantic_threshold", default_semantic_threshold)
             return AppPreferences(
                 keywords=_split_keywords(settings.keywords),
+                semantic_queries=_split_keywords(settings.semantic_queries),
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
+                semantic_threshold=float(semantic_threshold or default_semantic_threshold),
             )
 
     async def update_keywords(self, keywords: Iterable[str]) -> None:
@@ -95,6 +111,65 @@ class Repository:
             settings.keywords = ""
             await session.commit()
 
+    async def update_semantic_queries(self, queries: Iterable[str]) -> None:
+        normalized = "\n".join(q.strip() for q in queries if q.strip())
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            settings.semantic_queries = normalized
+            await session.commit()
+
+    async def add_semantic_query(self, query: str) -> bool:
+        q = (query or "").strip()
+        if not q:
+            return False
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            items = _split_keywords(settings.semantic_queries)
+            low = {s.casefold() for s in items}
+            if q.casefold() in low:
+                return False
+            items.append(q)
+            settings.semantic_queries = "\n".join(items)
+            await session.commit()
+            return True
+
+    async def remove_semantic_query(self, query: str) -> bool:
+        q = (query or "").strip()
+        if not q:
+            return False
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            items = _split_keywords(settings.semantic_queries)
+            before = len(items)
+            items = [s for s in items if s.casefold() != q.casefold()]
+            if len(items) == before:
+                return False
+            settings.semantic_queries = "\n".join(items)
+            await session.commit()
+            return True
+
+    async def clear_semantic_queries(self) -> None:
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            settings.semantic_queries = ""
+            await session.commit()
+
+    async def set_semantic_threshold(self, threshold: float) -> None:
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            settings.semantic_threshold = float(threshold)
+            await session.commit()
+
     async def set_interval(self, interval_seconds: int) -> None:
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))
@@ -124,11 +199,14 @@ class Repository:
             settings = await session.scalar(select(AppSettings).limit(1))
             if settings is None:
                 return None
+            semantic_threshold = getattr(settings, "semantic_threshold", 0.0)
             return AppPreferences(
                 keywords=_split_keywords(settings.keywords),
+                semantic_queries=_split_keywords(settings.semantic_queries),
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
+                semantic_threshold=float(semantic_threshold or 0.0),
             )
 
     async def is_enabled(self) -> bool:
@@ -482,3 +560,14 @@ async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         # Create tables for current models; no ad-hoc migrations
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_app_settings_columns(conn)
+
+
+async def _ensure_app_settings_columns(conn: AsyncConnection) -> None:
+    # SQLite pragma works for our single-engine setup
+    result = await conn.execute(text("PRAGMA table_info(app_settings)"))
+    existing = {row[1] for row in result}
+    if "semantic_queries" not in existing:
+        await conn.execute(text("ALTER TABLE app_settings ADD COLUMN semantic_queries TEXT NOT NULL DEFAULT ''"))
+    if "semantic_threshold" not in existing:
+        await conn.execute(text("ALTER TABLE app_settings ADD COLUMN semantic_threshold FLOAT NOT NULL DEFAULT 0.7"))

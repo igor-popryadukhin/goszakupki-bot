@@ -6,10 +6,11 @@ import logging
 from aiogram import Bot
 from datetime import datetime, timedelta
 
-from ..config import ProviderConfig
+from ..config import ProviderConfig, SemanticConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
 from .match import Keyword, compile_keywords, find_matching_keywords
+from ..semantic import SemanticAnalyzer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ class DetailScanService:
         bot: Bot,
         provider_config: ProviderConfig,
         auth_state: "AuthState",
+        semantic_analyzer: SemanticAnalyzer | None = None,
+        semantic_config: SemanticConfig | None = None,
     ) -> None:
         self._provider = provider
         self._repo = repository
@@ -30,6 +33,8 @@ class DetailScanService:
         self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
+        self._semantic_analyzer = semantic_analyzer
+        self._semantic_threshold_default = (semantic_config.threshold if semantic_config else 0.7)
 
     async def run_scan(self) -> None:
         async with self._lock:
@@ -46,7 +51,8 @@ class DetailScanService:
             return
         prefs = await self._repo.get_preferences()
         keywords = compile_keywords(prefs.keywords) if (prefs and prefs.enabled) else []
-        await self._process_item(item, prefs, keywords)
+        semantic_queries = list(prefs.semantic_queries) if (prefs and prefs.enabled and prefs.semantic_queries) else []
+        await self._process_item(item, prefs, keywords, semantic_queries)
         remaining = await self._repo.count_pending_detail()
         LOGGER.info("Detail scan tick", extra={"pulled": 1, "remaining": remaining})
 
@@ -55,6 +61,7 @@ class DetailScanService:
         item: Repository.PendingDetail,
         prefs: AppPreferences | None,
         keywords: list[Keyword],
+        semantic_queries: list[str],
     ) -> None:
         text = ""
         try:
@@ -76,37 +83,86 @@ class DetailScanService:
             return
 
         notified = 0
-        if prefs and prefs.enabled and keywords:
-            matched = []
-            if text:
-                matched = find_matching_keywords(text, keywords)
-            if not matched and item.title:
-                matched = find_matching_keywords(item.title, keywords)
-            if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
-                message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
-                # Collect all target chat ids: authorized chats plus user_ids (for private chats)
-                targets_getter = getattr(self._auth_state, "all_targets", None)
-                if callable(targets_getter):
-                    targets = list(targets_getter())
-                else:
-                    targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
-                if not targets:
-                    LOGGER.debug("Detail skip: no authorized chats in session")
-                else:
-                    for chat_id in targets:
-                        try:
-                            await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
-                            notified += 1
-                        except Exception:
-                            LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
-                if notified > 0:
-                    await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
+        semantic_info: tuple[str | None, float] | None = None
+        matched_keywords: list[Keyword] = []
+        semantic_relevant = False
+
+        if prefs and prefs.enabled:
+            if keywords:
+                if text:
+                    matched_keywords = find_matching_keywords(text, keywords)
+                if not matched_keywords and item.title:
+                    matched_keywords = find_matching_keywords(item.title, keywords)
+
+            if self._semantic_analyzer and semantic_queries:
+                threshold = (
+                    prefs.semantic_threshold
+                    if prefs.semantic_threshold is not None
+                    else self._semantic_threshold_default
+                )
+                semantic_relevant, semantic_info = self._evaluate_semantics(
+                    text,
+                    item.title,
+                    semantic_queries,
+                    float(threshold),
+                )
+
+            should_notify = bool(matched_keywords or semantic_relevant)
+        else:
+            should_notify = False
+
+        if should_notify and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
+            message = self._format_message(
+                item.url,
+                item.external_id,
+                item.title,
+                [k.raw for k in matched_keywords],
+                semantic_info,
+            )
+            targets_getter = getattr(self._auth_state, "all_targets", None)
+            if callable(targets_getter):
+                targets = list(targets_getter())
+            else:
+                targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
+            if not targets:
+                LOGGER.debug("Detail skip: no authorized chats in session")
+            else:
+                for chat_id in targets:
+                    try:
+                        await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
+                        notified += 1
+                    except Exception:
+                        LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
+            if notified > 0:
+                await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
 
         LOGGER.debug(
             "Detail processed",
             extra={"id": item.id, "loaded": bool(text), "notified": notified},
         )
         await self._repo.complete_detail_scan(item.id)
+
+    def _evaluate_semantics(
+        self,
+        text: str | None,
+        title: str | None,
+        queries: list[str],
+        threshold: float,
+    ) -> tuple[bool, tuple[str | None, float] | None]:
+        analyzer = self._semantic_analyzer
+        if analyzer is None or not queries:
+            return False, None
+        for content in (text, title):
+            if not content:
+                continue
+            relevant, score = analyzer.is_relevant(content, queries, threshold)
+            if relevant:
+                details = analyzer.explain_last_match(content, queries)
+                if details:
+                    query, detail_score = details
+                    return True, (query, float(detail_score))
+                return True, (None, float(score))
+        return False, None
 
     async def _handle_retry(self, item: Repository.PendingDetail) -> None:
         cfg = self._config.detail
@@ -133,7 +189,14 @@ class DetailScanService:
             },
         )
 
-    def _format_message(self, url: str, external_id: str, title: str | None, matched_keywords: list[str] | None) -> str:
+    def _format_message(
+        self,
+        url: str,
+        external_id: str,
+        title: str | None,
+        matched_keywords: list[str] | None,
+        semantic_info: tuple[str | None, float] | None,
+    ) -> str:
         t = title or "Без названия"
         lines = [
             f"🔎 Совпадение в тексте закупки ({self._config.source_id})",
@@ -143,6 +206,13 @@ class DetailScanService:
         ]
         if matched_keywords:
             lines.append(f"Совпадение по: {self._format_keywords(matched_keywords)}")
+        if semantic_info:
+            query, score = semantic_info
+            score_text = f"{score:.2f}" if score is not None else "—"
+            if query:
+                lines.append(f"Семантическое совпадение: «{query}» (score {score_text})")
+            else:
+                lines.append(f"Семантическое совпадение (score {score_text})")
         return "\n".join(lines)
 
     @staticmethod

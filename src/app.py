@@ -34,6 +34,7 @@ async def main() -> None:
         config.provider,
         config.auth,
         container.auth_state,
+        config.semantic,
     )
     dispatcher: Dispatcher = container.dispatcher
     # Глобальная проверка авторизации

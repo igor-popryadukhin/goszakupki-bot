@@ -12,7 +12,7 @@ from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, In
 import hashlib
 from aiogram.filters import StateFilter
 
-from ..config import ProviderConfig, AppConfig
+from ..config import ProviderConfig, AppConfig, SemanticConfig
 from ..db.repo import Repository, AppPreferences
 from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
@@ -48,6 +48,7 @@ def create_router(
     provider_config: ProviderConfig,
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
+    semantic_config: SemanticConfig,
 ) -> Router:
     router = Router()
 
@@ -109,6 +110,7 @@ def create_router(
         prefs = await repo.get_or_create_settings(
             default_interval=provider_config.check_interval_default,
             default_pages=provider_config.pages_default,
+            default_semantic_threshold=semantic_config.threshold,
         )
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(
@@ -147,6 +149,11 @@ def create_router(
                 /keywords — управление по одному (добавление/удаление)
                 /set_interval <интервал> — например: 5m, 1h, 30s
                 /set_pages <число> — количество страниц для проверки
+                /squeries — показать семантические запросы
+                /add_squery <фраза> — добавить семантическую фразу
+                /del_squery <фраза> — удалить семантическую фразу
+                /clear_squeries — очистить семантические фразы
+                /set_sthreshold <0.0-1.0> — установить порог семантики
                 /enable — включить мониторинг
                 /disable — выключить мониторинг
                 /status — показать статус
@@ -304,6 +311,78 @@ def create_router(
     @router.message(Command("keywords"))
     async def command_keywords_manage(message: Message) -> None:
         await _send_keywords_page(message, repo, page=1)
+
+    @router.message(Command("squeries"))
+    async def command_semantic_queries(message: Message) -> None:
+        prefs = await repo.get_preferences()
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        if not prefs.semantic_queries:
+            await message.answer(
+                f"Семантические запросы не заданы. Текущий порог: {prefs.semantic_threshold:.2f}"
+            )
+            return
+        shown = prefs.semantic_queries[:20]
+        text = "\n".join(f"• {q}" for q in shown)
+        if len(prefs.semantic_queries) > len(shown):
+            text += f"\n… и ещё {len(prefs.semantic_queries) - len(shown)}"
+        await message.answer(
+            "\n".join(
+                [
+                    "Семантические запросы:",
+                    text,
+                    "",
+                    f"Порог сходства: {prefs.semantic_threshold:.2f}",
+                ]
+            )
+        )
+
+    @router.message(Command("add_squery"))
+    async def command_add_semantic_query(message: Message, command: CommandObject) -> None:
+        phrase = (command.args or "").strip()
+        if not phrase:
+            await message.answer("Использование: /add_squery <фраза>")
+            return
+        added = await repo.add_semantic_query(phrase)
+        if added:
+            await message.answer(f"Добавлено семантическое выражение: {phrase}")
+        else:
+            await message.answer("Такая фраза уже присутствует или пуста.")
+
+    @router.message(Command("del_squery"))
+    async def command_delete_semantic_query(message: Message, command: CommandObject) -> None:
+        phrase = (command.args or "").strip()
+        if not phrase:
+            await message.answer("Использование: /del_squery <фраза>")
+            return
+        removed = await repo.remove_semantic_query(phrase)
+        if removed:
+            await message.answer(f"Удалено: {phrase}")
+        else:
+            await message.answer("Такой фразы нет в списке.")
+
+    @router.message(Command("clear_squeries"))
+    async def command_clear_semantic_queries(message: Message) -> None:
+        await repo.clear_semantic_queries()
+        await message.answer("Семантические запросы очищены.")
+
+    @router.message(Command("set_sthreshold"))
+    async def command_set_semantic_threshold(message: Message, command: CommandObject) -> None:
+        raw = (command.args or "").strip().replace(",", ".")
+        if not raw:
+            await message.answer("Использование: /set_sthreshold <0.0-1.0>")
+            return
+        try:
+            value = float(raw)
+        except ValueError:
+            await message.answer("Неверное число. Укажите значение от 0 до 1.")
+            return
+        if not 0.0 <= value <= 1.0:
+            await message.answer("Порог должен быть в пределах 0.0–1.0.")
+            return
+        await repo.set_semantic_threshold(value)
+        await message.answer(f"Новый порог семантики: {value:.2f}")
 
     @router.message(StateFilter(KeywordsForm.waiting_for_keywords), F.text & ~F.text.startswith("/"))
     async def receive_keywords(message: Message, state: FSMContext) -> None:
@@ -692,6 +771,15 @@ def _format_preferences(prefs: AppPreferences) -> str:
         if len(kws) > 10:
             kws_display += f"\n… и ещё {len(kws) - 10}"
 
+    squeries = prefs.semantic_queries or []
+    if not squeries:
+        squeries_display = "(не заданы)"
+    else:
+        shown_sq = squeries[:10]
+        squeries_display = "\n".join(shown_sq)
+        if len(squeries) > 10:
+            squeries_display += f"\n… и ещё {len(squeries) - 10}"
+
     lines = [
         "Настройки:",
         f"• Интервал проверки: {prefs.interval_seconds} сек.",
@@ -699,6 +787,10 @@ def _format_preferences(prefs: AppPreferences) -> str:
         "",
         "Ключевые слова:",
         kws_display,
+        "",
+        "Семантические запросы:",
+        squeries_display,
+        f"Порог семантики: {prefs.semantic_threshold:.2f}",
         "",
         "Подсказки:",
         "• Кнопка ‘Ключевые слова’ — пришлите список, по одному на строку",
@@ -727,6 +819,11 @@ async def _format_status(repo: Repository, prefs: AppPreferences, provider_confi
     if kws and len(kws) > 10:
         kws_display += f"\n… и ещё {len(kws) - 10}"
 
+    squeries = prefs.semantic_queries or []
+    squeries_display = "\n".join(squeries[:10]) if squeries else "(нет)"
+    if squeries and len(squeries) > 10:
+        squeries_display += f"\n… и ещё {len(squeries) - 10}"
+
     lines = [
         f"Статус мониторинга: {status}",
         f"Интервал опроса: {prefs.interval_seconds} сек.",
@@ -746,6 +843,10 @@ async def _format_status(repo: Repository, prefs: AppPreferences, provider_confi
         "",
         "Ключевые слова:",
         kws_display,
+        "",
+        "Семантический анализ:",
+        f"Порог: {prefs.semantic_threshold:.2f}",
+        squeries_display,
     ])
     return "\n".join(lines)
 

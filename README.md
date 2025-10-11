@@ -6,6 +6,7 @@
 
 - Периодический опрос первых N страниц каталога (листинг).
 - Детальный разбор страниц закупок и фильтрация по ключевым словам (уведомления только после детразбора).
+- Семантический анализ текста закупок: поиск по смыслу с управляемым порогом сходства.
 - Глобальные (единые) настройки: ключевые слова, интервал, число страниц.
 - Уведомления с названием, ссылкой и номером закупки. Дедупликация уведомлений.
 
@@ -26,6 +27,12 @@
    DETAIL_BACKOFF_BASE_SECONDS=60
    DETAIL_BACKOFF_FACTOR=2.0
    DETAIL_BACKOFF_MAX_SECONDS=3600
+   SEMANTIC_MODEL=BAAI/bge-m3
+   SEMANTIC_THRESHOLD=0.7
+   SEMANTIC_USE_XNLI=false
+   SEMANTIC_XNLI_MODEL=MoritzLaurer/mDeBERTa-v3-base-xnli
+   SEMANTIC_XNLI_THRESHOLD=0.5
+   SEMANTIC_MODELS_DIR=./models
    GZ_LIST_ITEM=.tenders-list .tender-card
    GZ_TITLE=.tender-card__title
    GZ_LINK=.tender-card__title a
@@ -57,11 +64,29 @@
    - `DETAIL_BACKOFF_FACTOR` — множитель экспоненты (2.0 означает удвоение задержки на каждый повтор).
    - `DETAIL_BACKOFF_MAX_SECONDS` — верхняя граница задержки.
 
+   Параметры семантического анализа:
+   - `SEMANTIC_MODEL` — имя sentence-transformers модели (по умолчанию `BAAI/bge-m3`).
+   - `SEMANTIC_THRESHOLD` — порог косинусного сходства (0.0–1.0).
+   - `SEMANTIC_USE_XNLI` — если `true`, дополнительно загружать zero-shot классификатор.
+   - `SEMANTIC_XNLI_MODEL` и `SEMANTIC_XNLI_THRESHOLD` — модель и порог для zero-shot оценки.
+   - `SEMANTIC_MODELS_DIR` — директория с локально скачанными моделями (по умолчанию `./models`).
+   - `SEMANTIC_DEVICE` — устройство для инференса (`cpu`, `cuda`, `auto`).
+
 ## Авторизация
 
 - Авторизация обязательна. Выполните `/login <логин> <пароль>`.
 - Авторизованный чат сохраняется между перезапусками бота.
 - Уведомления отправляются только в авторизованный чат.
+
+## Семантический поиск
+
+- Настройте фразы для поиска по смыслу командами `/squeries`, `/add_squery`, `/del_squery`, `/clear_squeries`.
+- Порог сходства изменяется командой `/set_sthreshold <0.0-1.0>` и хранится в базе.
+- Перед запуском скачайте модели в директорию `SEMANTIC_MODELS_DIR`, например:
+
+  ```bash
+  python scripts/download_models.py --models-dir ./models
+  ```
 
 ## Локальный запуск (без Docker)
 

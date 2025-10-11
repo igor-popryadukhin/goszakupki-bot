@@ -13,6 +13,7 @@ from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
+from .semantic import SemanticAnalyzer
 from .tg.bot import create_bot, create_dispatcher
 from .tg.auth_state import AuthState
 
@@ -29,6 +30,13 @@ class Container:
         self.dispatcher: Dispatcher = create_dispatcher()
         self.provider: SourceProvider = self._create_provider()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
+        self.semantic_analyzer = SemanticAnalyzer(
+            config.semantic.model,
+            models_path=config.semantic.models_dir,
+            device=config.semantic.device,
+            zero_shot_model=config.semantic.zero_shot_model if config.semantic.use_xnli else None,
+            zero_shot_threshold=config.semantic.zero_shot_threshold,
+        )
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
@@ -48,6 +56,8 @@ class Container:
             bot=self.bot,
             provider_config=config.provider,
             auth_state=self.auth_state,
+            semantic_analyzer=self.semantic_analyzer,
+            semantic_config=config.semantic,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
