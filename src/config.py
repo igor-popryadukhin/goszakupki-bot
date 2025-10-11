@@ -109,6 +109,7 @@ class AppConfig:
     database: DatabaseConfig
     provider: ProviderConfig
     logging: LoggingConfig
+    semantic: "SemanticConfig"
     
     @dataclass(slots=True)
     class AuthConfig:
@@ -120,6 +121,17 @@ class AppConfig:
             return bool((self.login or "") and (self.password or ""))
 
     auth: "AppConfig.AuthConfig" = field(default_factory=lambda: AppConfig.AuthConfig())
+
+
+@dataclass(slots=True)
+class SemanticConfig:
+    model: str
+    threshold: float
+    models_dir: Path
+    use_xnli: bool
+    zero_shot_model: Optional[str]
+    zero_shot_threshold: float
+    device: Optional[str] = None
 
 
 def load_config() -> AppConfig:
@@ -181,11 +193,30 @@ def load_config() -> AppConfig:
         prefer_table=_get_bool("GZ_PREFER_TABLE", True),
     )
 
+    semantic_models_dir = Path(os.getenv("SEMANTIC_MODELS_DIR", "./models")).resolve()
+    semantic_model = os.getenv("SEMANTIC_MODEL", "BAAI/bge-m3")
+    semantic_threshold = _get_float("SEMANTIC_THRESHOLD", 0.7)
+    semantic_use_xnli = _get_bool("SEMANTIC_USE_XNLI", False)
+    semantic_xnli_model = os.getenv("SEMANTIC_XNLI_MODEL")
+    if semantic_use_xnli and not semantic_xnli_model:
+        semantic_xnli_model = "MoritzLaurer/mDeBERTa-v3-base-xnli"
+    semantic_xnli_threshold = _get_float("SEMANTIC_XNLI_THRESHOLD", 0.5)
+    semantic_device = os.getenv("SEMANTIC_DEVICE") or None
+
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
         provider=provider_config,
         logging=LoggingConfig(),
+        semantic=SemanticConfig(
+            model=semantic_model,
+            threshold=semantic_threshold,
+            models_dir=semantic_models_dir,
+            use_xnli=semantic_use_xnli,
+            zero_shot_model=semantic_xnli_model,
+            zero_shot_threshold=semantic_xnli_threshold,
+            device=semantic_device,
+        ),
         auth=AppConfig.AuthConfig(
             login=os.getenv("AUTH_LOGIN") or None,
             password=os.getenv("AUTH_PASSWORD") or None,

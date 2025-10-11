@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev \
     libxslt1-dev \
     libffi-dev \
+    libopenblas-dev \
+    libgomp1 \
     tzdata \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -20,6 +22,7 @@ RUN pip install --no-cache-dir poetry \
  && poetry install --no-interaction --no-ansi --only main --no-root
 
 COPY src/ /app/src/
+COPY scripts/ /app/scripts/
 
 RUN useradd -ms /bin/bash appuser \
     && mkdir -p /data \

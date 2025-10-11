@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -18,6 +18,8 @@ class AppSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     keywords: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    semantic_queries: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    semantic_threshold: Mapped[float] = mapped_column(Float, default=0.7, nullable=False)
     interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     pages: Mapped[int] = mapped_column(Integer, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
