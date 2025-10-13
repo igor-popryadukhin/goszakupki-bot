@@ -13,7 +13,7 @@ import hashlib
 from aiogram.filters import StateFilter
 
 from ..config import ProviderConfig, AppConfig
-from ..db.repo import Repository, AppPreferences
+from ..db.repo import AppPreferences, Repository, StorageFullError
 from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
@@ -38,6 +38,21 @@ class KeywordAddForm(StatesGroup):
     waiting_for_keyword = State()
 
 ADMIN_USER_ID = 693950562
+
+STORAGE_FULL_MESSAGE = (
+    "Не удалось сохранить изменения: закончилось свободное место в базе данных бота. "
+    "Освободите место (например, удалите старые записи) и повторите попытку."
+)
+
+
+async def _notify_storage_full_message(message: Message) -> None:
+    await message.answer(STORAGE_FULL_MESSAGE)
+
+
+async def _notify_storage_full_callback(callback: CallbackQuery) -> None:
+    await callback.answer(STORAGE_FULL_MESSAGE, show_alert=True)
+    if callback.message:
+        await callback.message.answer(STORAGE_FULL_MESSAGE)
 
 
 def create_router(
@@ -328,7 +343,13 @@ def create_router(
             await message.answer("Сейчас идёт ввод ключевых слов. Отправь список или нажми ‘Отмена’.")
             return
         lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        await repo.update_keywords(lines)
+        try:
+            await repo.update_keywords(lines)
+        except StorageFullError:
+            LOGGER.warning("Failed to update keywords: storage full", extra={"keywords": len(lines)})
+            await state.clear()
+            await _notify_storage_full_message(message)
+            return
         await state.clear()
         prefs2 = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
@@ -388,7 +409,14 @@ def create_router(
         if not text:
             await message.answer("Пустая строка. Введите ключевое слово или нажмите ‘Отмена’.")
             return
-        added = await repo.add_keyword(text)
+        try:
+            added = await repo.add_keyword(text)
+        except StorageFullError:
+            LOGGER.warning("Failed to add keyword: storage full", extra={"keyword": text})
+            await state.clear()
+            await _notify_storage_full_message(message)
+            await _send_keywords_page(message, repo, page=1)
+            return
         await state.clear()
         if added:
             await message.answer(f"Добавлено ключевое слово: {text}")
@@ -489,7 +517,12 @@ def create_router(
             page = int(page_str)
         except Exception:
             page = 1
-        await repo.clear_keywords()
+        try:
+            await repo.clear_keywords()
+        except StorageFullError:
+            LOGGER.warning("Failed to clear keywords: storage full")
+            await _notify_storage_full_callback(callback)
+            return
         await callback.answer("Очищено")
         await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
@@ -516,7 +549,12 @@ def create_router(
         if not target:
             await callback.answer("Элемент не найден", show_alert=True)
             return
-        removed = await repo.remove_keyword(target)
+        try:
+            removed = await repo.remove_keyword(target)
+        except StorageFullError:
+            LOGGER.warning("Failed to remove keyword: storage full", extra={"keyword": target})
+            await _notify_storage_full_callback(callback)
+            return
         if removed:
             await callback.answer("Удалено", show_alert=False)
         else:
@@ -546,7 +584,12 @@ def create_router(
         if not target:
             await callback.answer("Элемент не найден", show_alert=True)
             return
-        removed = await repo.remove_keyword(target)
+        try:
+            removed = await repo.remove_keyword(target)
+        except StorageFullError:
+            LOGGER.warning("Failed to remove keyword (alpha view): storage full", extra={"keyword": target})
+            await _notify_storage_full_callback(callback)
+            return
         await callback.answer("Удалено" if removed else "Не удалось удалить", show_alert=False)
         await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
@@ -560,7 +603,12 @@ def create_router(
         except ValueError as exc:
             await message.answer(f"Не удалось распознать интервал: {exc}")
             return
-        await repo.set_interval(seconds)
+        try:
+            await repo.set_interval(seconds)
+        except StorageFullError:
+            LOGGER.warning("Failed to set interval: storage full", extra={"seconds": seconds})
+            await _notify_storage_full_message(message)
+            return
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
@@ -583,7 +631,12 @@ def create_router(
             await message.answer(f"Не удалось распознать интервал: {exc}. Попробуй ещё раз.")
             return
         await state.clear()
-        await repo.set_interval(seconds)
+        try:
+            await repo.set_interval(seconds)
+        except StorageFullError:
+            LOGGER.warning("Failed to set interval (RU prompt): storage full", extra={"seconds": seconds})
+            await _notify_storage_full_message(message)
+            return
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         await message.answer(f"Интервал обновлён: {seconds} секунд")
@@ -600,7 +653,12 @@ def create_router(
         except ValueError:
             await message.answer("Число страниц должно быть положительным целым")
             return
-        await repo.set_pages(pages)
+        try:
+            await repo.set_pages(pages)
+        except StorageFullError:
+            LOGGER.warning("Failed to set pages: storage full", extra={"pages": pages})
+            await _notify_storage_full_message(message)
+            return
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
@@ -621,15 +679,29 @@ def create_router(
             await message.answer("Число страниц должно быть положительным целым. Попробуй ещё раз.")
             return
         await state.clear()
-        await repo.set_pages(pages)
+        try:
+            await repo.set_pages(pages)
+        except StorageFullError:
+            LOGGER.warning("Failed to set pages (RU prompt): storage full", extra={"pages": pages})
+            await _notify_storage_full_message(message)
+            return
         await message.answer(f"Количество страниц обновлено: {pages}")
 
     @router.message(Command("enable"))
     async def command_enable(message: Message) -> None:
-        await repo.set_enabled(True)
+        try:
+            await repo.set_enabled(True)
+        except StorageFullError:
+            LOGGER.warning("Failed to enable monitoring: storage full")
+            await _notify_storage_full_message(message)
+            return
         # Избежать лавины: пометить текущие детекции как уже уведомлённые
         try:
             await repo.seed_notifications_global_for_existing(provider_config.source_id)
+        except StorageFullError:
+            LOGGER.warning("Failed to seed notifications: storage full")
+            await _notify_storage_full_message(message)
+            return
         except Exception:
             LOGGER.exception("Failed to seed notifications for existing detections")
         await monitor_scheduler.refresh_schedule()
@@ -644,7 +716,12 @@ def create_router(
 
     @router.message(Command("disable"))
     async def command_disable(message: Message) -> None:
-        await repo.set_enabled(False)
+        try:
+            await repo.set_enabled(False)
+        except StorageFullError:
+            LOGGER.warning("Failed to disable monitoring: storage full")
+            await _notify_storage_full_message(message)
+            return
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
