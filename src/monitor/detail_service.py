@@ -10,7 +10,7 @@ from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
 from .match import Keyword, compile_keywords, find_matching_keywords
-from .semantic import SemanticMatcher
+from .semantic import SemanticMatcher, SemanticMatch
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,27 +79,51 @@ class DetailScanService:
             return
 
         notified = 0
+        semantic_details: list[SemanticMatch] = []
+        semantic_summary: str | None = None
         if prefs and prefs.enabled and keywords:
             matched: list[Keyword] = []
             if self._semantic_matcher and text:
                 combined_text = self._combine_title_and_text(item.title, text)
                 try:
-                    semantic_raw = await self._semantic_matcher.match_keywords(
+                    analysis = await self._semantic_matcher.match_keywords(
                         combined_text,
                         [kw.raw for kw in keywords],
                     )
                 except Exception:
                     LOGGER.exception("Semantic matcher failed")
-                    semantic_raw = []
-                if semantic_raw:
-                    target_set = {raw.casefold(): raw for raw in semantic_raw}
-                    matched = [kw for kw in keywords if kw.raw.casefold() in target_set]
+                    analysis = None
+                if analysis and analysis.matches:
+                    lookup = {kw.raw.casefold(): kw for kw in keywords}
+                    for match in analysis.matches:
+                        keyword_obj = lookup.get(match.keyword.casefold())
+                        if keyword_obj is None:
+                            continue
+                        if keyword_obj in matched:
+                            continue
+                        matched.append(keyword_obj)
+                        reason = " ".join((match.reason or "").split())
+                        semantic_details.append(
+                            SemanticMatch(
+                                keyword=keyword_obj.raw,
+                                score=match.score,
+                                reason=reason,
+                            )
+                        )
+                    semantic_summary = (analysis.summary or "").strip() or None
             if not matched and text:
                 matched = find_matching_keywords(text, keywords)
             if not matched and item.title:
                 matched = find_matching_keywords(item.title, keywords)
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
-                message = self._format_message(item.url, item.external_id, item.title, [k.raw for k in matched])
+                message = self._format_message(
+                    item.url,
+                    item.external_id,
+                    item.title,
+                    [k.raw for k in matched],
+                    semantic_summary=semantic_summary,
+                    semantic_details=semantic_details if semantic_details else None,
+                )
                 # Collect all target chat ids: authorized chats plus user_ids (for private chats)
                 targets_getter = getattr(self._auth_state, "all_targets", None)
                 if callable(targets_getter):
@@ -158,7 +182,16 @@ class DetailScanService:
             },
         )
 
-    def _format_message(self, url: str, external_id: str, title: str | None, matched_keywords: list[str] | None) -> str:
+    def _format_message(
+        self,
+        url: str,
+        external_id: str,
+        title: str | None,
+        matched_keywords: list[str] | None,
+        *,
+        semantic_summary: str | None = None,
+        semantic_details: list[SemanticMatch] | None = None,
+    ) -> str:
         t = title or "Без названия"
         lines = [
             f"🔎 Совпадение в тексте закупки ({self._config.source_id})",
@@ -166,7 +199,21 @@ class DetailScanService:
             f"Ссылка: {url}",
             f"Номер: {external_id}",
         ]
-        if matched_keywords:
+        if semantic_summary:
+            summary_clean = " ".join(semantic_summary.split())
+            if len(summary_clean) > 280:
+                summary_clean = summary_clean[:277] + "..."
+            lines.append(f"Суть: {summary_clean}")
+        if semantic_details:
+            lines.append("Семантические совпадения:")
+            for match in semantic_details:
+                reason = match.reason or "Совпадение по смыслу"
+                reason = " ".join(reason.split())
+                if len(reason) > 180:
+                    reason = reason[:177] + "..."
+                score_text = f" (оценка {match.score:.2f})" if match.score > 0 else ""
+                lines.append(f"• {match.keyword}: {reason}{score_text}")
+        elif matched_keywords:
             lines.append(f"Совпадение по: {self._format_keywords(matched_keywords)}")
         return "\n".join(lines)
 

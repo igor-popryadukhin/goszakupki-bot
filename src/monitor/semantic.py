@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
@@ -13,8 +14,21 @@ from ..config import DeepSeekConfig
 LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class SemanticMatch:
+    keyword: str
+    score: float
+    reason: str
+
+
+@dataclass(slots=True)
+class SemanticAnalysis:
+    summary: str
+    matches: list[SemanticMatch]
+
+
 class SemanticMatcher:
-    async def match_keywords(self, text: str, keywords: Sequence[str]) -> list[str]:  # pragma: no cover - interface
+    async def match_keywords(self, text: str, keywords: Sequence[str]) -> SemanticAnalysis | None:  # pragma: no cover - interface
         raise NotImplementedError
 
 
@@ -30,12 +44,12 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 await self._session.close()
                 self._session = None
 
-    async def match_keywords(self, text: str, keywords: Sequence[str]) -> list[str]:
+    async def match_keywords(self, text: str, keywords: Sequence[str]) -> SemanticAnalysis | None:
         if not self._config.enabled:
-            return []
+            return None
         cleaned_text = (text or "").strip()
         if not cleaned_text:
-            return []
+            return None
 
         unique_keywords: list[str] = []
         seen: set[str] = set()
@@ -52,7 +66,7 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 break
 
         if not unique_keywords:
-            return []
+            return None
 
         if len(cleaned_text) > self._config.max_chars > 0:
             cleaned_text = cleaned_text[: self._config.max_chars]
@@ -68,13 +82,13 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                         "DeepSeek API returned non-200 status",
                         extra={"status": response.status, "body": body[:500]},
                     )
-                    return []
+                    return None
                 data = await response.json()
         except asyncio.CancelledError:
             raise
         except Exception:
             LOGGER.exception("Failed to call DeepSeek API")
-            return []
+            return None
 
         return self._parse_response(data, unique_keywords)
 
@@ -95,14 +109,16 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
         formatted_keywords = "\n".join(f"- {kw}" for kw in keywords)
         user_prompt = (
             "Текст закупки приведён ниже между тройными кавычками. "
-            "Затем перечислены ключевые слова. Определи, какие ключевые слова действительно отражают содержание текста, "
-            "даже если формулировки отличаются. Оцени семантическую близость, а не только дословные совпадения."
+            "Затем перечислены ключевые слова. Сначала в одном коротком предложении (до 25 слов) сформулируй суть закупки. "
+            "Затем определи, какие ключевые слова действительно отражают содержание текста, даже если формулировки отличаются. "
+            "Оцени семантическую близость, а не только дословные совпадения."
             "\n\n" "\"\"\"\n"
             f"{text}\n"
             "\"\"\"\n\n"
             "Ключевые слова:\n"
             f"{formatted_keywords}\n\n"
-            "Верни только JSON вида {\"matches\": [{\"keyword\": \"...\", \"score\": 0.0-1.0, \"reason\": \"...\"}]}."
+            "Верни JSON вида {\"summary\": \"...\", \"matches\": [{\"keyword\": \"...\", \"score\": 0.0-1.0, \"reason\": \"...\"}]}. "
+            "summary — это краткое описание сути закупки на русском языке. reason — короткое (до 20 слов) объяснение, почему слово подходит."
             "Используй только ключевые слова из списка. Если совпадений нет, верни {\"matches\": []}."
         )
         payload: dict[str, Any] = {
@@ -112,7 +128,8 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                     "role": "system",
                     "content": (
                         "Ты ассистент, который помогает определять соответствие ключевых слов тексту закупки. "
-                        "Отвечай строго в формате JSON и не добавляй пояснений вне структуры."
+                        "Отвечай строго в формате JSON и не добавляй пояснений вне структуры. "
+                        "Пиши кратко и по-русски."
                     ),
                 },
                 {"role": "user", "content": user_prompt},
@@ -122,43 +139,50 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
         }
         return payload
 
-    def _parse_response(self, data: dict[str, Any], keywords: Sequence[str]) -> list[str]:
+    def _parse_response(self, data: dict[str, Any], keywords: Sequence[str]) -> SemanticAnalysis | None:
         choices = data.get("choices")
         if not choices:
             LOGGER.warning("DeepSeek response has no choices", extra={"data": data})
-            return []
+            return None
         message = choices[0].get("message")
         if not isinstance(message, dict):
             LOGGER.warning("DeepSeek response message malformed", extra={"message": message})
-            return []
+            return None
         content = message.get("content")
         if not isinstance(content, str):
             LOGGER.warning("DeepSeek content is missing or not a string", extra={"content": content})
-            return []
+            return None
 
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError:
             LOGGER.warning("Failed to decode DeepSeek JSON response", extra={"content": content})
-            return []
+            return None
 
         matches = parsed.get("matches")
         if not isinstance(matches, list):
-            return []
+            matches = []
+
+        summary = parsed.get("summary")
+        if not isinstance(summary, str):
+            summary = ""
+        summary = summary.strip()
 
         normalized = {kw.casefold(): kw for kw in keywords}
         min_score = max(min(self._config.min_score, 1.0), 0.0)
-        result: list[str] = []
+        result: list[SemanticMatch] = []
         for entry in matches:
             if isinstance(entry, str):
                 candidate = entry
                 score = 1.0
+                reason = ""
             elif isinstance(entry, dict):
                 candidate = (entry.get("keyword") or entry.get("key") or "").strip()
                 try:
                     score = float(entry.get("score", 0.0))
                 except (TypeError, ValueError):
                     score = 0.0
+                reason = str(entry.get("reason") or entry.get("explanation") or "").strip()
             else:
                 continue
             key = candidate.casefold()
@@ -167,10 +191,20 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 continue
             if score < min_score:
                 continue
-            if original not in result:
-                result.append(original)
+            if any(match.keyword.casefold() == original.casefold() for match in result):
+                continue
+            if not reason:
+                reason = "Совпадение по смыслу"
+            result.append(SemanticMatch(keyword=original, score=score, reason=reason))
 
         if result:
-            LOGGER.debug("DeepSeek matched keywords", extra={"keywords": result})
-        return result
+            LOGGER.debug(
+                "DeepSeek matched keywords",
+                extra={"keywords": [match.keyword for match in result], "summary": summary},
+            )
+
+        if not result and not summary:
+            return None
+
+        return SemanticAnalysis(summary=summary, matches=result)
 
