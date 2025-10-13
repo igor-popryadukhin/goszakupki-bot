@@ -90,13 +90,25 @@
 
 ## Локальный запуск (без Docker)
 
-1. Установите зависимости через Poetry:
+1. Создайте изолированное виртуальное окружение (пример для стандартного `venv`):
 
    ```bash
-   poetry install --only main
+   python -m venv .venv
    ```
 
-2. Запустите приложение:
+2. Активируйте окружение:
+
+   ```bash
+   source .venv/bin/activate  # Windows: .venv\Scripts\activate
+   ```
+
+3. Установите зависимости проекта (Poetry ставит их в активированное окружение):
+
+   ```bash
+   poetry install --no-root --only main
+   ```
+
+4. Запустите приложение, находясь в активном окружении:
 
    ```bash
    python -m src.app
