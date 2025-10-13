@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
-from .match import Keyword, compile_keywords, find_matching_keywords
+from .match import Keyword, compile_keywords
 from .semantic import SemanticMatcher, SemanticMatch
 
 LOGGER = logging.getLogger(__name__)
@@ -111,16 +111,11 @@ class DetailScanService:
                             )
                         )
                     semantic_summary = (analysis.summary or "").strip() or None
-            if not matched and text:
-                matched = find_matching_keywords(text, keywords)
-            if not matched and item.title:
-                matched = find_matching_keywords(item.title, keywords)
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(
                     item.url,
                     item.external_id,
                     item.title,
-                    [k.raw for k in matched],
                     semantic_summary=semantic_summary,
                     semantic_details=semantic_details if semantic_details else None,
                 )
@@ -187,7 +182,6 @@ class DetailScanService:
         url: str,
         external_id: str,
         title: str | None,
-        matched_keywords: list[str] | None,
         *,
         semantic_summary: str | None = None,
         semantic_details: list[SemanticMatch] | None = None,
@@ -213,24 +207,4 @@ class DetailScanService:
                     reason = reason[:177] + "..."
                 score_text = f" (оценка {match.score:.2f})" if match.score > 0 else ""
                 lines.append(f"• {match.keyword}: {reason}{score_text}")
-        elif matched_keywords:
-            lines.append(f"Совпадение по: {self._format_keywords(matched_keywords)}")
         return "\n".join(lines)
-
-    @staticmethod
-    def _format_keywords(keywords: list[str], *, limit: int = 5) -> str:
-        seen: set[str] = set()
-        uniq: list[str] = []
-        for k in keywords:
-            s = (k or "").strip()
-            if not s:
-                continue
-            key = s.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            uniq.append(s)
-        if len(uniq) <= limit:
-            return ", ".join(uniq)
-        rest = len(uniq) - limit
-        return f"{', '.join(uniq[:limit])} (и ещё {rest})"
