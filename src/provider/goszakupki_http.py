@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlencode
 import aiohttp
 from bs4 import BeautifulSoup
 
+
 from ..config import ProviderConfig
 from .base import Listing, SourceProvider
 
@@ -88,7 +89,12 @@ class GoszakupkiHttpProvider(SourceProvider):
         # Упрощённый способ: ищем по всему документу без селекторов
         try:
             soup = BeautifulSoup(html, "lxml")
-            return soup.get_text(" ", strip=True)
+            for tag in soup.find_all(["script", "style", "noscript", "template"]):
+                tag.decompose()
+            text = soup.get_text(" ", strip=True)
+            # Нормализуем пробелы, чтобы сократить токены для LLM
+            text = re.sub(r"\s+", " ", text)
+            return text
         except Exception:  # pragma: no cover - устойчивость к кривой верстке
             LOGGER.exception("Failed to parse detail page", extra={"url": url})
             return ""

@@ -98,6 +98,22 @@ class ProviderConfig:
 
 
 @dataclass(slots=True)
+class DeepSeekConfig:
+    api_key: Optional[str] = None
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-chat"
+    enabled: bool = False
+    timeout_seconds: float = 30.0
+    min_score: float = 0.6
+    max_chars: int = 6000
+    max_keywords: int = 25
+
+    @property
+    def api_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/chat/completions"
+
+
+@dataclass(slots=True)
 class LoggingConfig:
     level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     timezone: str = field(default_factory=lambda: os.getenv("TZ", "UTC"))
@@ -108,8 +124,9 @@ class AppConfig:
     telegram: TelegramConfig
     database: DatabaseConfig
     provider: ProviderConfig
+    deepseek: DeepSeekConfig
     logging: LoggingConfig
-    
+
     @dataclass(slots=True)
     class AuthConfig:
         login: Optional[str] = None
@@ -181,10 +198,26 @@ def load_config() -> AppConfig:
         prefer_table=_get_bool("GZ_PREFER_TABLE", True),
     )
 
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY") or None
+    deepseek_enabled = _get_bool("DEEPSEEK_ENABLED", bool(deepseek_api_key))
+    if not deepseek_api_key:
+        deepseek_enabled = False
+    deepseek_config = DeepSeekConfig(
+        api_key=deepseek_api_key,
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        enabled=deepseek_enabled,
+        timeout_seconds=_get_float("DEEPSEEK_TIMEOUT_SECONDS", 30.0),
+        min_score=_get_float("DEEPSEEK_MIN_SCORE", 0.6),
+        max_chars=_get_int("DEEPSEEK_MAX_CHARS", 6000),
+        max_keywords=_get_int("DEEPSEEK_MAX_KEYWORDS", 25),
+    )
+
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
         provider=provider_config,
+        deepseek=deepseek_config,
         logging=LoggingConfig(),
         auth=AppConfig.AuthConfig(
             login=os.getenv("AUTH_LOGIN") or None,

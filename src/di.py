@@ -9,6 +9,7 @@ from .config import AppConfig
 from .db.repo import Repository, init_db
 from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
+from .monitor.semantic import DeepSeekSemanticAnalyzer
 from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
@@ -29,6 +30,13 @@ class Container:
         self.dispatcher: Dispatcher = create_dispatcher()
         self.provider: SourceProvider = self._create_provider()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
+        if config.deepseek.enabled and config.deepseek.api_key:
+            LOGGER.info(
+                "DeepSeek semantic analysis enabled", extra={"model": config.deepseek.model}
+            )
+            self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
+        else:
+            self.semantic_matcher = None
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
@@ -48,6 +56,7 @@ class Container:
             bot=self.bot,
             provider_config=config.provider,
             auth_state=self.auth_state,
+            semantic_matcher=self.semantic_matcher,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
@@ -69,5 +78,7 @@ class Container:
             if hasattr(self.provider, "shutdown"):
                 await getattr(self.provider, "shutdown")()
         finally:
+            if self.semantic_matcher is not None:
+                await self.semantic_matcher.close()
             await self.engine.dispose()
             await self.bot.session.close()
