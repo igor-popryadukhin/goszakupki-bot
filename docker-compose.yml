@@ -30,6 +30,11 @@ services:
       # Auth gate (optional). When set, bot requires /login
       AUTH_LOGIN: ${AUTH_LOGIN}
       AUTH_PASSWORD: ${AUTH_PASSWORD}
+
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_ENABLED: 1
+      DEEPSEEK_MODEL: deepseek-chat
+      DEEPSEEK_MIN_SCORE: 0.6
     volumes:
       - ./data:/data
     restart: unless-stopped
