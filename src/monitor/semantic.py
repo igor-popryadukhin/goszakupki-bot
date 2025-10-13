@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 import aiohttp
@@ -12,6 +13,10 @@ import aiohttp
 from ..config import DeepSeekConfig
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_keyword(value: str) -> str:
+    return "".join(ch for ch in value.casefold() if ch.isalnum())
 
 
 @dataclass(slots=True)
@@ -168,7 +173,8 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
             summary = ""
         summary = summary.strip()
 
-        normalized = {kw.casefold(): kw for kw in keywords}
+        normalized_pairs = [(kw, _normalize_keyword(kw)) for kw in keywords]
+        normalized = {norm: kw for kw, norm in normalized_pairs if norm}
         min_score = max(min(self._config.min_score, 1.0), 0.0)
         result: list[SemanticMatch] = []
         for entry in matches:
@@ -185,9 +191,31 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 reason = str(entry.get("reason") or entry.get("explanation") or "").strip()
             else:
                 continue
-            key = candidate.casefold()
-            original = normalized.get(key)
+            norm_candidate = _normalize_keyword(candidate)
+            original = normalized.get(norm_candidate)
+            if not original and norm_candidate:
+                for kw, norm in normalized_pairs:
+                    if not norm:
+                        continue
+                    if norm in norm_candidate or norm_candidate in norm:
+                        original = kw
+                        break
+            if not original and norm_candidate:
+                best_ratio = 0.0
+                best_keyword: str | None = None
+                for kw, norm in normalized_pairs:
+                    if not norm:
+                        continue
+                    ratio = SequenceMatcher(None, norm_candidate, norm).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_keyword = kw
+                if best_ratio >= 0.75 and best_keyword:
+                    original = best_keyword
             if not original:
+                LOGGER.debug(
+                    "DeepSeek keyword not mapped", extra={"candidate": candidate, "keywords": keywords}
+                )
                 continue
             if score < min_score:
                 continue
