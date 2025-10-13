@@ -10,6 +10,7 @@ from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
 from .match import Keyword, compile_keywords, find_matching_keywords
+from .semantic import SemanticMatcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class DetailScanService:
         bot: Bot,
         provider_config: ProviderConfig,
         auth_state: "AuthState",
+        semantic_matcher: SemanticMatcher | None = None,
     ) -> None:
         self._provider = provider
         self._repo = repository
@@ -30,6 +32,7 @@ class DetailScanService:
         self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
+        self._semantic_matcher = semantic_matcher
 
     async def run_scan(self) -> None:
         async with self._lock:
@@ -77,8 +80,21 @@ class DetailScanService:
 
         notified = 0
         if prefs and prefs.enabled and keywords:
-            matched = []
-            if text:
+            matched: list[Keyword] = []
+            if self._semantic_matcher and text:
+                combined_text = self._combine_title_and_text(item.title, text)
+                try:
+                    semantic_raw = await self._semantic_matcher.match_keywords(
+                        combined_text,
+                        [kw.raw for kw in keywords],
+                    )
+                except Exception:
+                    LOGGER.exception("Semantic matcher failed")
+                    semantic_raw = []
+                if semantic_raw:
+                    target_set = {raw.casefold(): raw for raw in semantic_raw}
+                    matched = [kw for kw in keywords if kw.raw.casefold() in target_set]
+            if not matched and text:
                 matched = find_matching_keywords(text, keywords)
             if not matched and item.title:
                 matched = find_matching_keywords(item.title, keywords)
@@ -107,6 +123,15 @@ class DetailScanService:
             extra={"id": item.id, "loaded": bool(text), "notified": notified},
         )
         await self._repo.complete_detail_scan(item.id)
+
+    @staticmethod
+    def _combine_title_and_text(title: str | None, text: str) -> str:
+        t = (title or "").strip()
+        if not t:
+            return text
+        if t.casefold() in text.casefold():
+            return text
+        return f"{t}\n\n{text}"
 
     async def _handle_retry(self, item: Repository.PendingDetail) -> None:
         cfg = self._config.detail

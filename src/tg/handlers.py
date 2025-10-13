@@ -366,7 +366,14 @@ def create_router(
     async def kw_add_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(KeywordAddForm.waiting_for_keyword)
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="kw_cancel_add")]])
-        await callback.message.answer("Введите ключевое слово для добавления:", reply_markup=kb)
+        await callback.message.answer(
+            "Введите ключевое слово для добавления:\n\n"
+            "Советы для семантического поиска DeepSeek:\n"
+            "• Формулируйте короткие описательные фразы (до 3–5 слов).\n"
+            "• Добавляйте важные параметры: предмет закупки, материалы, регион, объём.\n"
+            "• Избегайте длинных предложений и объединяйте разные идеи отдельными ключами.",
+            reply_markup=kb,
+        )
         await callback.answer()
 
     @router.callback_query(F.data == "kw_cancel_add")
