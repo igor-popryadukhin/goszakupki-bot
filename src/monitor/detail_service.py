@@ -81,6 +81,7 @@ class DetailScanService:
         notified = 0
         semantic_details: list[SemanticMatch] = []
         semantic_summary: str | None = None
+        submission_deadline: str | None = None
         if prefs and prefs.enabled and keywords:
             matched: list[Keyword] = []
             if self._semantic_matcher and text:
@@ -93,6 +94,9 @@ class DetailScanService:
                 except Exception:
                     LOGGER.exception("Semantic matcher failed")
                     analysis = None
+                if analysis:
+                    if analysis.submission_deadline:
+                        submission_deadline = analysis.submission_deadline
                 if analysis and analysis.matches:
                     lookup = {kw.raw.casefold(): kw for kw in keywords}
                     for match in analysis.matches:
@@ -118,6 +122,7 @@ class DetailScanService:
                     item.title,
                     semantic_summary=semantic_summary,
                     semantic_details=semantic_details if semantic_details else None,
+                    submission_deadline=submission_deadline,
                 )
                 # Collect all target chat ids: authorized chats plus user_ids (for private chats)
                 targets_getter = getattr(self._auth_state, "all_targets", None)
@@ -185,6 +190,7 @@ class DetailScanService:
         *,
         semantic_summary: str | None = None,
         semantic_details: list[SemanticMatch] | None = None,
+        submission_deadline: str | None = None,
     ) -> str:
         t = title or "Без названия"
         lines = [
@@ -193,6 +199,8 @@ class DetailScanService:
             f"Ссылка: {url}",
             f"Номер: {external_id}",
         ]
+        if submission_deadline:
+            lines.append(f"Приём сведений прекращается: {submission_deadline}")
         if semantic_summary:
             summary_clean = " ".join(semantic_summary.split())
             if len(summary_clean) > 280:
@@ -208,3 +216,4 @@ class DetailScanService:
                 score_text = f" (оценка {match.score:.2f})" if match.score > 0 else ""
                 lines.append(f"• {match.keyword}: {reason}{score_text}")
         return "\n".join(lines)
+
