@@ -18,6 +18,8 @@ from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
+from ..monitor.weekly_report_scheduler import WeeklyReportScheduler
+from ..monitor.weekly_report_service import WeeklyReportService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
 
@@ -58,8 +60,10 @@ async def _notify_storage_full_callback(callback: CallbackQuery) -> None:
 def create_router(
     repo: Repository,
     monitor_scheduler: MonitorScheduler,
+    weekly_report_scheduler: WeeklyReportScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
+    weekly_report_service: WeeklyReportService,
     provider_config: ProviderConfig,
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
@@ -144,6 +148,7 @@ def create_router(
             reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin),
         )
         await monitor_scheduler.refresh_schedule()
+        await weekly_report_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
 
     @router.message(Command("help"))
@@ -165,6 +170,7 @@ def create_router(
                 /enable — включить мониторинг
                 /disable — выключить мониторинг
                 /status — показать статус
+                /weekly_report — получить отчёт за 7 дней
                 /test — тестовое уведомление
                 /cancel — отменить текущий ввод
                 """
@@ -238,6 +244,15 @@ def create_router(
         text = await _format_status(repo, prefs, provider_config)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
+
+    @router.message(Command("weekly_report"))
+    async def command_weekly_report(message: Message) -> None:
+        prefs = await repo.get_preferences()
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        report = await weekly_report_service.build_report()
+        await message.answer(report)
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
@@ -610,6 +625,7 @@ def create_router(
             await _notify_storage_full_message(message)
             return
         await monitor_scheduler.refresh_schedule()
+        await weekly_report_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
@@ -638,6 +654,7 @@ def create_router(
             await _notify_storage_full_message(message)
             return
         await monitor_scheduler.refresh_schedule()
+        await weekly_report_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         await message.answer(f"Интервал обновлён: {seconds} секунд")
 
@@ -705,6 +722,7 @@ def create_router(
         except Exception:
             LOGGER.exception("Failed to seed notifications for existing detections")
         await monitor_scheduler.refresh_schedule()
+        await weekly_report_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
@@ -723,6 +741,7 @@ def create_router(
             await _notify_storage_full_message(message)
             return
         await monitor_scheduler.refresh_schedule()
+        await weekly_report_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)

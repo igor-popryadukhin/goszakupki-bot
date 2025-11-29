@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import time
 import os
 from pathlib import Path
 from typing import Optional
@@ -138,6 +139,14 @@ class AppConfig:
 
     auth: "AppConfig.AuthConfig" = field(default_factory=lambda: AppConfig.AuthConfig())
 
+    @dataclass(slots=True)
+    class WeeklyReportConfig:
+        report_time: Optional[time] = None
+
+    weekly_report: "AppConfig.WeeklyReportConfig" = field(
+        default_factory=lambda: AppConfig.WeeklyReportConfig()
+    )
+
 
 def load_config() -> AppConfig:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -213,6 +222,17 @@ def load_config() -> AppConfig:
         max_keywords=_get_int("DEEPSEEK_MAX_KEYWORDS", 25),
     )
 
+    weekly_report_time_str = os.getenv("WEEKLY_REPORT_AT") or None
+    weekly_report_time: Optional[time] = None
+    if weekly_report_time_str:
+        try:
+            hours_str, minutes_str = weekly_report_time_str.split(":", 1)
+            weekly_report_time = time(hour=int(hours_str), minute=int(minutes_str))
+        except Exception as exc:
+            raise ValueError(
+                "Invalid time format for WEEKLY_REPORT_AT. Use HH:MM (24h)."
+            ) from exc
+
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
@@ -223,4 +243,5 @@ def load_config() -> AppConfig:
             login=os.getenv("AUTH_LOGIN") or None,
             password=os.getenv("AUTH_PASSWORD") or None,
         ),
+        weekly_report=AppConfig.WeeklyReportConfig(report_time=weekly_report_time),
     )
