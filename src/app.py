@@ -29,8 +29,10 @@ async def main() -> None:
     router = create_router(
         container.repository,
         container.scheduler,
+        container.weekly_report_scheduler,
         container.detail_scheduler,
         container.detail_service,
+        container.weekly_report_service,
         config.provider,
         config.auth,
         container.auth_state,
@@ -56,6 +58,7 @@ async def main() -> None:
             await dispatcher.storage.close()
         except Exception:  # pragma: no cover
             LOGGER.exception("Failed to close dispatcher storage")
+        await container.weekly_report_scheduler.shutdown()
         await container.scheduler.shutdown()
         await container.detail_scheduler.shutdown()
         await container.shutdown()
@@ -63,6 +66,7 @@ async def main() -> None:
     setup_signal_handlers(shutdown)
 
     await container.scheduler.start()
+    await container.weekly_report_scheduler.start()
     await container.detail_scheduler.start()
 
     try:

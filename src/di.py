@@ -9,6 +9,8 @@ from .config import AppConfig
 from .db.repo import Repository, init_db
 from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
+from .monitor.weekly_report_scheduler import WeeklyReportScheduler
+from .monitor.weekly_report_service import WeeklyReportService
 from .monitor.semantic import DeepSeekSemanticAnalyzer
 from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.service import MonitorService
@@ -49,6 +51,18 @@ class Container:
             repository=self.repository,
             provider_config=config.provider,
             logging_config=config.logging,
+        )
+        self.weekly_report_service = WeeklyReportService(
+            repository=self.repository,
+            bot=self.bot,
+            auth_state=self.auth_state,
+            logging_config=config.logging,
+        )
+        self.weekly_report_scheduler = WeeklyReportScheduler(
+            service=self.weekly_report_service,
+            repository=self.repository,
+            logging_config=config.logging,
+            report_time=config.weekly_report.report_time,
         )
         self.detail_service = DetailScanService(
             provider=self.provider,
