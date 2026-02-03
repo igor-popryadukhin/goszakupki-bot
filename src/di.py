@@ -28,7 +28,7 @@ class Container:
         self.repository = Repository(self.session_factory)
         self.bot: Bot = create_bot(config.telegram.token)
         self.dispatcher: Dispatcher = create_dispatcher()
-        self.provider: SourceProvider = self._create_provider()
+        self.providers: list[SourceProvider] = self._create_providers()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
         if config.deepseek.enabled and config.deepseek.api_key:
             LOGGER.info(
@@ -37,46 +37,58 @@ class Container:
             self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
         else:
             self.semantic_matcher = None
+        provider_entries = [
+            MonitorService.ProviderEntry(provider=provider, config=provider_config)
+            for provider, provider_config in zip(self.providers, config.providers)
+        ]
         self.monitor_service = MonitorService(
-            provider=self.provider,
+            providers=provider_entries,
             repository=self.repository,
             bot=self.bot,
-            provider_config=config.provider,
             auth_state=self.auth_state,
         )
         self.scheduler = MonitorScheduler(
             service=self.monitor_service,
             repository=self.repository,
-            provider_config=config.provider,
+            provider_configs=config.providers,
             logging_config=config.logging,
         )
         self.detail_service = DetailScanService(
-            provider=self.provider,
+            providers=[
+                DetailScanService.ProviderEntry(provider=provider, config=provider_config)
+                for provider, provider_config in zip(self.providers, config.providers)
+            ],
             repository=self.repository,
             bot=self.bot,
-            provider_config=config.provider,
             auth_state=self.auth_state,
             semantic_matcher=self.semantic_matcher,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
             repository=self.repository,
-            provider_config=config.provider,
+            provider_configs=config.providers,
             logging_config=config.logging,
         )
 
-    def _create_provider(self) -> SourceProvider:
-        if self.config.provider.use_playwright:
-            LOGGER.warning("Playwright provider requested but not fully implemented; falling back to HTTP provider")
-        return GoszakupkiHttpProvider(self.config.provider)
+    def _create_providers(self) -> list[SourceProvider]:
+        providers: list[SourceProvider] = []
+        for provider_config in self.config.providers:
+            if provider_config.use_playwright:
+                LOGGER.warning(
+                    "Playwright provider requested but not fully implemented; falling back to HTTP provider",
+                    extra={"source_id": provider_config.source_id},
+                )
+            providers.append(GoszakupkiHttpProvider(provider_config))
+        return providers
 
     async def init_database(self) -> None:
         await init_db(self.engine)
 
     async def shutdown(self) -> None:
         try:
-            if hasattr(self.provider, "shutdown"):
-                await getattr(self.provider, "shutdown")()
+            for provider in self.providers:
+                if hasattr(provider, "shutdown"):
+                    await getattr(provider, "shutdown")()
         finally:
             if self.semantic_matcher is not None:
                 await self.semantic_matcher.close()
