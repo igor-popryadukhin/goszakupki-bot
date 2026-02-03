@@ -32,7 +32,7 @@ async def main() -> None:
         container.scheduler,
         container.detail_scheduler,
         container.detail_service,
-        config.provider,
+        config.providers,
         config.auth,
         container.auth_state,
     )

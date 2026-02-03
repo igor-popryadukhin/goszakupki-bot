@@ -125,12 +125,12 @@ class DetailScanService:
                             )
                         )
                     semantic_summary = (analysis.summary or "").strip() or None
-            if matched and not await self._repo.has_notification_global_sent(entry.config.source_id, item.external_id):
+            if matched and not await self._repo.has_notification_global_sent(item.source_id, item.external_id):
                 message = self._format_message(
                     item.url,
                     item.external_id,
                     item.title,
-                    provider_config=entry.config,
+                    source_id=item.source_id,
                     semantic_summary=semantic_summary,
                     semantic_details=semantic_details if semantic_details else None,
                     submission_deadline=submission_deadline,
@@ -151,7 +151,7 @@ class DetailScanService:
                         except Exception:
                             LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
                 if notified > 0:
-                    await self._repo.create_notification_global(entry.config.source_id, item.external_id, sent=True)
+                    await self._repo.create_notification_global(item.source_id, item.external_id, sent=True)
 
         LOGGER.debug(
             "Detail processed",
@@ -199,14 +199,14 @@ class DetailScanService:
         external_id: str,
         title: str | None,
         *,
-        provider_config: ProviderConfig,
+        source_id: str,
         semantic_summary: str | None = None,
         semantic_details: list[SemanticMatch] | None = None,
         submission_deadline: str | None = None,
     ) -> str:
         t = title or "Без названия"
         lines = [
-            f"🔎 Совпадение в тексте закупки ({provider_config.source_id})",
+            f"🔎 Совпадение в тексте закупки ({source_id})",
             f"Название: {t}",
             f"Ссылка: {url}",
             f"Номер: {external_id}",

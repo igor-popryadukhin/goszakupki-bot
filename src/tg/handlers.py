@@ -60,11 +60,13 @@ def create_router(
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
-    provider_config: ProviderConfig,
+    provider_configs: list[ProviderConfig],
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
 ) -> Router:
     router = Router()
+    provider_map = {config.source_id: config for config in provider_configs}
+    default_provider = provider_configs[0] if provider_configs else None
 
     # Secret admin section: view authorized users
     @router.message(Command("auth"))
@@ -121,9 +123,12 @@ def create_router(
             )
             return
 
+        if default_provider is None:
+            await message.answer("Источники не настроены. Проверь конфигурацию.")
+            return
         prefs = await repo.get_or_create_settings(
-            default_interval=provider_config.check_interval_default,
-            default_pages=provider_config.pages_default,
+            default_interval=default_provider.check_interval_default,
+            default_pages=default_provider.pages_default,
         )
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(
@@ -164,8 +169,8 @@ def create_router(
                 /set_pages <число> — количество страниц для проверки
                 /enable — включить мониторинг
                 /disable — выключить мониторинг
-                /status — показать статус
-                /test — тестовое уведомление
+                /status [source_id] — показать статус (для источника или всех)
+                /test [source_id] — тестовое уведомление
                 /cancel — отменить текущий ввод
                 """
             ).strip()
@@ -230,12 +235,16 @@ def create_router(
         await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
 
     @router.message(Command("status"))
-    async def command_status(message: Message) -> None:
+    async def command_status(message: Message, command: CommandObject) -> None:
         prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        text = await _format_status(repo, prefs, provider_config)
+        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        text = await _format_status(repo, prefs, provider_configs, source_id=source_id)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
 
@@ -251,7 +260,13 @@ def create_router(
 
     @router.message(F.text.casefold() == "статус")
     async def ru_status(message: Message) -> None:
-        await command_status(message)
+        prefs = await repo.get_preferences()
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        text = await _format_status(repo, prefs, provider_configs)
+        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
+        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
 
     @router.message(F.text.casefold() == "помощь")
     async def ru_help(message: Message) -> None:
@@ -266,24 +281,29 @@ def create_router(
     # Очистка детекций: подтверждение через inline-кнопки
     @router.message(F.text.casefold() == "очистить детекции")
     async def ru_clear_detections_prompt(message: Message) -> None:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="✅ Подтвердить очистку", callback_data="confirm_clear_det"),
-                    InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det"),
-                ]
-            ]
-        )
+        kb = _build_clear_detections_keyboard(provider_configs)
         await message.answer(
-            "Внимание: будут удалены все детекции для текущего источника. Уведомления не трогаем.",
+            "Внимание: будут удалены все детекции для выбранного источника. Уведомления не трогаем.",
             reply_markup=kb,
         )
 
-    @router.callback_query(F.data == "confirm_clear_det")
+    @router.callback_query(F.data.startswith("confirm_clear_det:"))
     async def clear_detections_cb(callback: CallbackQuery) -> None:
+        if not callback.data:
+            await callback.answer("Нет данных", show_alert=True)
+            return
+        _, source_id = callback.data.split(":", 1)
+        source_id = source_id.strip()
+        if not source_id:
+            await callback.answer("Источник не указан", show_alert=True)
+            return
+        if source_id != "all" and source_id not in provider_map:
+            await callback.answer("Неизвестный источник", show_alert=True)
+            return
         try:
-            deleted = await repo.clear_detections(source_id=provider_config.source_id)
-            await callback.message.answer(f"Очистка завершена. Удалено записей: {deleted}")
+            deleted = await repo.clear_detections(source_id=None if source_id == "all" else source_id)
+            label = "все источники" if source_id == "all" else source_id
+            await callback.message.answer(f"Очистка завершена ({label}). Удалено записей: {deleted}")
         except Exception:
             LOGGER.exception("Failed to clear detections")
             await callback.message.answer("Ошибка при очистке детекций")
@@ -598,8 +618,20 @@ def create_router(
         if not command.args:
             await message.answer("Укажи интервал, например: /set_interval 5m")
             return
+        args = command.args.split()
+        source_id = _parse_source_id(args[0] if args else None, provider_map, allow_unmatched=True)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        if source_id:
+            value = " ".join(args[1:])
+        else:
+            value = " ".join(args)
+        if not value:
+            await message.answer("Укажи интервал, например: /set_interval 5m")
+            return
         try:
-            seconds = parse_duration(command.args)
+            seconds = parse_duration(value)
         except ValueError as exc:
             await message.answer(f"Не удалось распознать интервал: {exc}")
             return
@@ -613,7 +645,11 @@ def create_router(
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        scope = f"для {source_id}" if source_id else "для всех источников"
+        await message.answer(
+            f"Интервал обновлён: {seconds} секунд ({scope})",
+            reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin),
+        )
 
     # Обработчик /cancel ниже оставлен для совместимости (глобальный выше перехватит)
 
@@ -646,8 +682,20 @@ def create_router(
         if not command.args:
             await message.answer("Укажи число страниц, например: /set_pages 2")
             return
+        args = command.args.split()
+        source_id = _parse_source_id(args[0] if args else None, provider_map, allow_unmatched=True)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        if source_id:
+            value = " ".join(args[1:])
+        else:
+            value = " ".join(args)
+        if not value:
+            await message.answer("Укажи число страниц, например: /set_pages 2")
+            return
         try:
-            pages = int(command.args.strip())
+            pages = int(value.strip())
             if pages <= 0:
                 raise ValueError
         except ValueError:
@@ -661,7 +709,11 @@ def create_router(
             return
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        scope = f"для {source_id}" if source_id else "для всех источников"
+        await message.answer(
+            f"Количество страниц обновлено: {pages} ({scope})",
+            reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin),
+        )
 
     # Кнопка: Страницы (запрос значения)
     @router.message(F.text.casefold() == "страницы")
@@ -696,14 +748,18 @@ def create_router(
             await _notify_storage_full_message(message)
             return
         # Избежать лавины: пометить текущие детекции как уже уведомлённые
-        try:
-            await repo.seed_notifications_global_for_existing(provider_config.source_id)
-        except StorageFullError:
-            LOGGER.warning("Failed to seed notifications: storage full")
-            await _notify_storage_full_message(message)
-            return
-        except Exception:
-            LOGGER.exception("Failed to seed notifications for existing detections")
+        for provider_config in provider_configs:
+            try:
+                await repo.seed_notifications_global_for_existing(provider_config.source_id)
+            except StorageFullError:
+                LOGGER.warning("Failed to seed notifications: storage full", extra={"source_id": provider_config.source_id})
+                await _notify_storage_full_message(message)
+                return
+            except Exception:
+                LOGGER.exception(
+                    "Failed to seed notifications for existing detections",
+                    extra={"source_id": provider_config.source_id},
+                )
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
@@ -734,32 +790,40 @@ def create_router(
 
     @router.message(F.text.casefold() == "тест")
     async def ru_test(message: Message) -> None:
-        await command_test(message)
-
-    @router.message(Command("test"))
-    async def command_test(message: Message) -> None:
         prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        text = "\n".join(
-            [
-                f"🛒 Тестовое уведомление ({provider_config.source_id})",
-                "Название: Пример закупки",
-                f"Ссылка: {provider_config.base_url}",
-                "Номер: auc0000000000",
-            ]
-        )
+        text = _format_test_message(provider_configs)
+        await message.answer(text)
+
+    @router.message(Command("test"))
+    async def command_test(message: Message, command: CommandObject) -> None:
+        prefs = await repo.get_preferences()
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        selected = _select_provider_configs(provider_configs, source_id)
+        text = _format_test_message(selected)
         await message.answer(text)
 
     # --- Admin broadcast test to all authorized recipients ---
     @router.message(F.text.casefold() == "тест всем")
     async def ru_admin_broadcast_test(message: Message) -> None:
-        await _admin_broadcast_test(message, auth_state, provider_config)
+        await _admin_broadcast_test(message, auth_state, provider_configs)
 
     @router.message(Command("broadcast_test"))
-    async def command_broadcast_test(message: Message) -> None:
-        await _admin_broadcast_test(message, auth_state, provider_config)
+    async def command_broadcast_test(message: Message, command: CommandObject) -> None:
+        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        selected = _select_provider_configs(provider_configs, source_id)
+        await _admin_broadcast_test(message, auth_state, selected)
 
     # Команды управления детсканером доступны только через переключатель мониторинга
 
@@ -793,45 +857,115 @@ def _format_preferences(prefs: AppPreferences) -> str:
     return "\n".join(lines)
 
 
-async def _format_status(repo: Repository, prefs: AppPreferences, provider_config: ProviderConfig) -> str:
+async def _format_status(
+    repo: Repository,
+    prefs: AppPreferences,
+    provider_configs: list[ProviderConfig],
+    *,
+    source_id: str | None = None,
+) -> str:
     status = "включён" if prefs.enabled else "выключен"
-    # Сегодня с полуночи по UTC (упрощённо)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
-    # Счётчики
-    det_total = await repo.count_detections(source_id=provider_config.source_id)
-    det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
     pending_detail = await repo.count_pending_detail()
-    notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
-    notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
-    last_det = await repo.last_detection_time(source_id=provider_config.source_id)
-    last_notif = await repo.last_notification_time_global(source_id=provider_config.source_id)
 
+    selected = _select_provider_configs(provider_configs, source_id)
     kws = prefs.keywords or []
     kws_display = "\n".join(kws[:10]) if kws else "(нет)"
     if kws and len(kws) > 10:
         kws_display += f"\n… и ещё {len(kws) - 10}"
 
-    lines = [
+    blocks: list[str] = [
         f"Статус мониторинга: {status}",
         f"Интервал опроса: {prefs.interval_seconds} сек.",
-        f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
         f"Страниц для проверки: {prefs.pages}",
         "",
-        "Данные:",
-        f"• Детекции: всего {det_total}, сегодня {det_today}",
-        f"• Очередь детсканера: {pending_detail}",
-        f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
+        f"Очередь детсканера: {pending_detail}",
     ]
-    if last_det:
-        lines.append(f"• Последняя детекция: {last_det}")
-    if last_notif:
-        lines.append(f"• Последнее уведомление: {last_notif}")
-    lines.extend([
+
+    for provider_config in selected:
+        det_total = await repo.count_detections(source_id=provider_config.source_id)
+        det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
+        notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
+        notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
+        last_det = await repo.last_detection_time(source_id=provider_config.source_id)
+        last_notif = await repo.last_notification_time_global(source_id=provider_config.source_id)
+
+        block_lines = [
+            "",
+            f"Источник: {provider_config.source_id}",
+            f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
+            f"• Детекции: всего {det_total}, сегодня {det_today}",
+            f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
+        ]
+        if last_det:
+            block_lines.append(f"• Последняя детекция: {last_det}")
+        if last_notif:
+            block_lines.append(f"• Последнее уведомление: {last_notif}")
+        blocks.extend(block_lines)
+
+    blocks.extend([
         "",
         "Ключевые слова:",
         kws_display,
     ])
-    return "\n".join(lines)
+    return "\n".join(blocks)
+
+
+def _format_sources_hint(provider_map: dict[str, ProviderConfig]) -> str:
+    if not provider_map:
+        return "Источники не настроены."
+    ids = ", ".join(sorted(provider_map.keys()))
+    return f"Неизвестный source_id. Доступные: {ids}"
+
+
+def _parse_source_id(
+    raw_args: str | None,
+    provider_map: dict[str, ProviderConfig],
+    *,
+    allow_unmatched: bool,
+) -> str | None | bool:
+    if not raw_args:
+        return None
+    source_id = raw_args.strip().split()[0]
+    if source_id in provider_map:
+        return source_id
+    return None if allow_unmatched else False
+
+
+def _select_provider_configs(provider_configs: list[ProviderConfig], source_id: str | None) -> list[ProviderConfig]:
+    if source_id:
+        return [config for config in provider_configs if config.source_id == source_id]
+    return list(provider_configs)
+
+
+def _format_test_message(provider_configs: list[ProviderConfig]) -> str:
+    if not provider_configs:
+        return "Нет настроенных источников."
+    blocks: list[str] = []
+    for provider_config in provider_configs:
+        blocks.append(
+            "\n".join(
+                [
+                    f"🛒 Тестовое уведомление ({provider_config.source_id})",
+                    "Название: Пример закупки",
+                    f"Ссылка: {provider_config.base_url}",
+                    "Номер: auc0000000000",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _build_clear_detections_keyboard(provider_configs: list[ProviderConfig]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for provider_config in provider_configs:
+        rows.append(
+            [InlineKeyboardButton(text=f"✅ Очистить {provider_config.source_id}", callback_data=f"confirm_clear_det:{provider_config.source_id}")]
+        )
+    if len(provider_configs) > 1:
+        rows.append([InlineKeyboardButton(text="🧹 Очистить все источники", callback_data="confirm_clear_det:all")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # Helpers for keywords management
@@ -954,7 +1088,7 @@ def _chunk_lines(lines: list[str], *, header: str = "", max_chars: int = 3500) -
         chunks.append(text)
     return chunks
 
-async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_config: ProviderConfig) -> None:
+async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_configs: list[ProviderConfig]) -> None:
     uid = message.from_user.id if message.from_user else 0
     if uid != ADMIN_USER_ID:
         await message.answer("Недоступно")
@@ -965,14 +1099,7 @@ async def _admin_broadcast_test(message: Message, auth_state: AuthState, provide
     if not targets:
         await message.answer("Нет авторизованных получателей")
         return
-    text = "\n".join(
-        [
-            f"🛒 Тестовое уведомление ({provider_config.source_id})",
-            "Название: Пример закупки",
-            f"Ссылка: {provider_config.base_url}",
-            "Номер: auc0000000000",
-        ]
-    )
+    text = _format_test_message(provider_configs)
     sent = 0
     for chat_id in sorted(set(targets)):
         try:
