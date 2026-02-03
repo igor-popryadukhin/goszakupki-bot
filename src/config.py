@@ -68,6 +68,15 @@ class HttpSelectorsConfig:
 
 
 @dataclass(slots=True)
+class HttpTableSelectorsConfig:
+    row: str
+    link: str
+    title: Optional[str] = None
+    id_cell: Optional[str] = None
+    id_from_href: bool = False
+
+
+@dataclass(slots=True)
 class HttpDetailSelectorsConfig:
     # Основной контейнер подробной страницы (CSS). Если пусто — используем fallback‑список в провайдере
     main: Optional[str] = None
@@ -88,6 +97,7 @@ class ProviderConfig:
     http_concurrency: int
     rate_limit_rps: float
     selectors: HttpSelectorsConfig
+    table_selectors: Optional[HttpTableSelectorsConfig] = None
     detail_selectors: HttpDetailSelectorsConfig = field(default_factory=HttpDetailSelectorsConfig)
     prefer_table: bool = False
     # Секция детального сканирования
@@ -206,7 +216,20 @@ def _load_provider_config(prefix: str, source_id: str) -> ProviderConfig:
             "link": ".tender-card__title a",
             "base_url": "https://goszakupki.by/tenders/posted",
             "prefer_table": True,
-        }
+        },
+        "ICE": {
+            "list_item": "table tbody tr",
+            "title": "a[href]",
+            "link": "a[href]",
+            "base_url": "https://icetrade.by/tenders/all",
+            "prefer_table": True,
+            "table": {
+                "row": "table tbody tr",
+                "link": "a[href]",
+                "title": "a[href]",
+                "id_cell": "td:nth-child(1)",
+            },
+        },
     }
     defaults = default_selectors.get(prefix, {})
     selectors = HttpSelectorsConfig(
@@ -216,6 +239,17 @@ def _load_provider_config(prefix: str, source_id: str) -> ProviderConfig:
         id_text=_get_prefixed("ID_TEXT", prefix),
         id_from_href=_get_bool(f"{prefix}_ID_FROM_HREF", False),
     )
+    table_defaults = defaults.get("table", {}) if isinstance(defaults, dict) else {}
+    table_row = _get_prefixed("TABLE_ROW", prefix, table_defaults.get("row"))
+    table_selectors = None
+    if table_row:
+        table_selectors = HttpTableSelectorsConfig(
+            row=table_row,
+            link=_get_prefixed_required("TABLE_LINK", prefix, table_defaults.get("link")),
+            title=_get_prefixed("TABLE_TITLE", prefix, table_defaults.get("title")),
+            id_cell=_get_prefixed("TABLE_ID_CELL", prefix, table_defaults.get("id_cell")),
+            id_from_href=_get_bool(f"{prefix}_TABLE_ID_FROM_HREF", bool(table_defaults.get("id_from_href", False))),
+        )
     detail_selectors = HttpDetailSelectorsConfig(
         main=_get_prefixed("DETAIL_MAIN", prefix) or None,
         text_selectors=_split_csv(f"{prefix}_DETAIL_TEXT_SELECTORS"),
@@ -238,6 +272,7 @@ def _load_provider_config(prefix: str, source_id: str) -> ProviderConfig:
         http_concurrency=_get_int("HTTP_CONCURRENCY", 3),
         rate_limit_rps=_get_float("RATE_LIMIT_RPS", 2.0),
         selectors=selectors,
+        table_selectors=table_selectors,
         detail_selectors=detail_selectors,
         detail=ProviderConfig.DetailScanConfig(
             interval_seconds=detail_interval,

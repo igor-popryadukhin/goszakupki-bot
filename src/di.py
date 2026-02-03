@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from .config import AppConfig
+from .config import AppConfig, ProviderConfig
 from .db.repo import Repository, init_db
 from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
@@ -14,6 +14,7 @@ from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
+from .provider.icetrade_http import IcetradeHttpProvider
 from .tg.bot import create_bot, create_dispatcher
 from .tg.auth_state import AuthState
 
@@ -78,8 +79,14 @@ class Container:
                     "Playwright provider requested but not fully implemented; falling back to HTTP provider",
                     extra={"source_id": provider_config.source_id},
                 )
-            providers.append(GoszakupkiHttpProvider(provider_config))
+            providers.append(self._build_http_provider(provider_config))
         return providers
+
+    @staticmethod
+    def _build_http_provider(provider_config: ProviderConfig) -> SourceProvider:
+        if provider_config.source_id == "icetrade.by":
+            return IcetradeHttpProvider(provider_config)
+        return GoszakupkiHttpProvider(provider_config)
 
     async def init_database(self) -> None:
         await init_db(self.engine)
