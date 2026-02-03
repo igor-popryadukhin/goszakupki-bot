@@ -40,6 +40,14 @@
    GZ_ID_TEXT=.tender-card__meta
    GZ_ID_FROM_HREF=1
    GZ_PREFER_TABLE=1
+   ICE_SOURCE_BASE_URL=https://icetrade.by/tenders/all
+   ICE_LIST_ITEM=table tbody tr
+   ICE_TITLE=a[href]
+   ICE_LINK=a[href]
+   ICE_TABLE_ROW=table tbody tr
+   ICE_TABLE_LINK=a[href]
+   ICE_TABLE_TITLE=a[href]
+   ICE_TABLE_ID_CELL=td:nth-child(1)
    # Ограничение доступа (опционально). Если задать, бот потребует авторизацию /login <логин> <пароль>
    AUTH_LOGIN=admin
    AUTH_PASSWORD=secret
@@ -62,6 +70,11 @@
    
    Парсинг списка:
    - `<PREFIX>_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
+   - `<PREFIX>_TABLE_ROW` — CSS селектор строк таблицы (отдельно от карточного листинга).
+   - `<PREFIX>_TABLE_LINK` — CSS селектор ссылки внутри строки таблицы.
+   - `<PREFIX>_TABLE_TITLE` — CSS селектор заголовка внутри строки таблицы (если отличается от ссылки).
+   - `<PREFIX>_TABLE_ID_CELL` — CSS селектор ячейки с номером закупки/ID.
+   - `<PREFIX>_TABLE_ID_FROM_HREF` — если 1, извлекать ID из ссылки (иначе сначала из таблицы).
    
    Параметры детального сканера:
    - `DETAIL_INTERVAL_SECONDS` — интервал тика детсканера (сканер всегда активен). Обрабатывается по одной записи за тик.
