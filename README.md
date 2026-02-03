@@ -15,6 +15,8 @@
 
    ```
    TELEGRAM_BOT_TOKEN=123456:ABC...
+   SOURCE_IDS=goszakupki.by
+   SOURCE_PREFIX=GZ
    SOURCE_PAGES_DEFAULT=2
    CHECK_INTERVAL_DEFAULT=300
    HTTP_TIMEOUT_SECONDS=10
@@ -31,6 +33,7 @@
    DEEPSEEK_ENABLED=1
    DEEPSEEK_MODEL=deepseek-chat
    DEEPSEEK_MIN_SCORE=0.6
+   GZ_SOURCE_BASE_URL=https://goszakupki.by/tenders/posted
    GZ_LIST_ITEM=.tenders-list .tender-card
    GZ_TITLE=.tender-card__title
    GZ_LINK=.tender-card__title a
@@ -47,13 +50,18 @@
 
 3. При необходимости добавьте другие переменные из `src/config.py`.
    
-   Переменные `GZ_DETAIL_*` управляют выделением «основного контента» на странице закупки для полнотекстового поиска:
-   - `GZ_DETAIL_MAIN` — CSS селектор контейнера основной области (если не задан, используется набор типичных кандидатов).
-   - `GZ_DETAIL_TEXT_SELECTORS` — CSV-список селекторов внутри основного контейнера; если заданы, текст собирается только из них.
-   - `GZ_DETAIL_EXCLUDE` — CSV-список селекторов, которые удаляются перед извлечением текста (меню, хлебные крошки, кнопки).
+   Источники задаются через `SOURCE_IDS` и префиксы окружения:
+   - `SOURCE_IDS=goszakupki.by,icetrade.by`
+   - `SOURCE_PREFIXES=GZ,ICE` (порядок совпадает с `SOURCE_IDS`)
+   - Для каждого источника используйте переменные с префиксом (`GZ_`, `ICE_`), например `GZ_SOURCE_BASE_URL`, `ICE_SOURCE_BASE_URL` и селекторы `*_LIST_ITEM`, `*_TITLE`, `*_LINK`.
+   
+   Переменные `<PREFIX>_DETAIL_*` управляют выделением «основного контента» на странице закупки для полнотекстового поиска:
+   - `<PREFIX>_DETAIL_MAIN` — CSS селектор контейнера основной области (если не задан, используется набор типичных кандидатов).
+   - `<PREFIX>_DETAIL_TEXT_SELECTORS` — CSV-список селекторов внутри основного контейнера; если заданы, текст собирается только из них.
+   - `<PREFIX>_DETAIL_EXCLUDE` — CSV-список селекторов, которые удаляются перед извлечением текста (меню, хлебные крошки, кнопки).
    
    Парсинг списка:
-   - `GZ_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
+   - `<PREFIX>_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
    
    Параметры детального сканера:
    - `DETAIL_INTERVAL_SECONDS` — интервал тика детсканера (сканер всегда активен). Обрабатывается по одной записи за тик.

@@ -20,8 +20,9 @@ async def main() -> None:
     configure_logging(config.logging.level)
     container = Container(config)
     await container.init_database()
-    if hasattr(container.provider, "startup"):
-        await getattr(container.provider, "startup")()
+    for provider in container.providers:
+        if hasattr(provider, "startup"):
+            await getattr(provider, "startup")()
 
     # Load persisted authorization state
     await container.auth_state.load()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from aiogram import Bot
 from datetime import datetime, timedelta
@@ -16,20 +17,23 @@ LOGGER = logging.getLogger(__name__)
 
 
 class DetailScanService:
+    @dataclass(slots=True)
+    class ProviderEntry:
+        provider: SourceProvider
+        config: ProviderConfig
+
     def __init__(
         self,
         *,
-        provider: SourceProvider,
+        providers: list["DetailScanService.ProviderEntry"],
         repository: Repository,
         bot: Bot,
-        provider_config: ProviderConfig,
         auth_state: "AuthState",
         semantic_matcher: SemanticMatcher | None = None,
     ) -> None:
-        self._provider = provider
+        self._providers = {entry.config.source_id: entry for entry in providers}
         self._repo = repository
         self._bot = bot
-        self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
         self._semantic_matcher = semantic_matcher
@@ -47,9 +51,14 @@ class DetailScanService:
             remaining = await self._repo.count_pending_detail()
             LOGGER.info("Detail scan tick", extra={"pulled": 0, "remaining": remaining})
             return
+        entry = self._providers.get(item.source_id)
+        if entry is None:
+            LOGGER.warning("Detail scan skipped: unknown source_id", extra={"source_id": item.source_id})
+            await self._repo.complete_detail_scan(item.id)
+            return
         prefs = await self._repo.get_preferences()
         keywords = compile_keywords(prefs.keywords) if (prefs and prefs.enabled) else []
-        await self._process_item(item, prefs, keywords)
+        await self._process_item(item, prefs, keywords, entry)
         remaining = await self._repo.count_pending_detail()
         LOGGER.info("Detail scan tick", extra={"pulled": 1, "remaining": remaining})
 
@@ -58,11 +67,12 @@ class DetailScanService:
         item: Repository.PendingDetail,
         prefs: AppPreferences | None,
         keywords: list[Keyword],
+        entry: "DetailScanService.ProviderEntry",
     ) -> None:
         text = ""
         try:
             # duck-typing: у провайдера может быть метод fetch_detail_text
-            fetch_detail = getattr(self._provider, "fetch_detail_text", None)
+            fetch_detail = getattr(entry.provider, "fetch_detail_text", None)
             if fetch_detail is None:
                 LOGGER.warning("Provider has no fetch_detail_text; skipping detail scan")
                 await self._repo.complete_detail_scan(item.id)
@@ -71,11 +81,11 @@ class DetailScanService:
             if text:
                 await self._repo.mark_detail_loaded(item.id, True)
             else:
-                await self._handle_retry(item)
+                await self._handle_retry(item, entry.config)
                 return
         except Exception:  # pragma: no cover
             LOGGER.exception("Detail fetch failed", extra={"url": item.url})
-            await self._handle_retry(item)
+            await self._handle_retry(item, entry.config)
             return
 
         notified = 0
@@ -115,11 +125,12 @@ class DetailScanService:
                             )
                         )
                     semantic_summary = (analysis.summary or "").strip() or None
-            if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
+            if matched and not await self._repo.has_notification_global_sent(entry.config.source_id, item.external_id):
                 message = self._format_message(
                     item.url,
                     item.external_id,
                     item.title,
+                    provider_config=entry.config,
                     semantic_summary=semantic_summary,
                     semantic_details=semantic_details if semantic_details else None,
                     submission_deadline=submission_deadline,
@@ -140,7 +151,7 @@ class DetailScanService:
                         except Exception:
                             LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
                 if notified > 0:
-                    await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
+                    await self._repo.create_notification_global(entry.config.source_id, item.external_id, sent=True)
 
         LOGGER.debug(
             "Detail processed",
@@ -157,8 +168,8 @@ class DetailScanService:
             return text
         return f"{t}\n\n{text}"
 
-    async def _handle_retry(self, item: Repository.PendingDetail) -> None:
-        cfg = self._config.detail
+    async def _handle_retry(self, item: Repository.PendingDetail, provider_config: ProviderConfig) -> None:
+        cfg = provider_config.detail
         attempt_next = (item.retry_count or 0) + 1
         if attempt_next > max(cfg.max_retries, 0):
             LOGGER.warning(
@@ -188,13 +199,14 @@ class DetailScanService:
         external_id: str,
         title: str | None,
         *,
+        provider_config: ProviderConfig,
         semantic_summary: str | None = None,
         semantic_details: list[SemanticMatch] | None = None,
         submission_deadline: str | None = None,
     ) -> str:
         t = title or "Без названия"
         lines = [
-            f"🔎 Совпадение в тексте закупки ({self._config.source_id})",
+            f"🔎 Совпадение в тексте закупки ({provider_config.source_id})",
             f"Название: {t}",
             f"Ссылка: {url}",
             f"Номер: {external_id}",
@@ -216,4 +228,3 @@ class DetailScanService:
                 score_text = f" (оценка {match.score:.2f})" if match.score > 0 else ""
                 lines.append(f"• {match.keyword}: {reason}{score_text}")
         return "\n".join(lines)
-

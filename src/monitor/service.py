@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Sequence
 
 from aiogram import Bot
@@ -15,19 +16,22 @@ LOGGER = logging.getLogger(__name__)
 
 
 class MonitorService:
+    @dataclass(slots=True)
+    class ProviderEntry:
+        provider: SourceProvider
+        config: ProviderConfig
+
     def __init__(
         self,
         *,
-        provider: SourceProvider,
+        providers: Sequence["MonitorService.ProviderEntry"],
         repository: Repository,
         bot: Bot,
-        provider_config: ProviderConfig,
         auth_state: "AuthState",
     ) -> None:
-        self._provider = provider
+        self._providers = list(providers)
         self._repo = repository
         self._bot = bot
-        self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
 
@@ -43,34 +47,36 @@ class MonitorService:
         if not prefs or not prefs.enabled:
             LOGGER.debug("Skip monitor iteration: disabled")
             return
-        max_pages = prefs.pages if prefs.pages > 0 else self._config.pages_default
-        LOGGER.debug(
-            "Starting monitor iteration",
-            extra={
-                "mode": "global",
-                "max_pages": max_pages,
-                "source": self._config.source_id,
-            },
-        )
+        for entry in self._providers:
+            max_pages = prefs.pages if prefs.pages > 0 else entry.config.pages_default
+            LOGGER.debug(
+                "Starting monitor iteration",
+                extra={
+                    "mode": "global",
+                    "max_pages": max_pages,
+                    "source": entry.config.source_id,
+                },
+            )
 
-        for page in range(1, max_pages + 1):
-            listings = await self._provider.fetch_page(page)
-            LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
-            if not listings:
-                continue
-            await self._process_page(page, listings, prefs)
+            for page in range(1, max_pages + 1):
+                listings = await entry.provider.fetch_page(page)
+                LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
+                if not listings:
+                    continue
+                await self._process_page(page, listings, prefs, entry.config)
 
     async def _process_page(
         self,
         page: int,
         listings: Sequence[Listing],
         prefs: AppPreferences,
+        provider_config: ProviderConfig,
     ) -> None:
         inserted = 0
         notified_total = 0
         for listing in listings:
             is_new = await self._repo.record_detection(
-                source_id=self._config.source_id,
+                source_id=provider_config.source_id,
                 external_id=listing.external_id,
                 title=listing.title,
                 url=listing.url,
@@ -97,15 +103,24 @@ class MonitorService:
         listing: Listing,
         prefs: AppPreferences,
         keywords: list[Keyword],
+        provider_config: ProviderConfig,
     ) -> int:
         # Disabled: notifications are only sent after detail text scan
-        LOGGER.debug("List-stage notifications disabled; waiting for detail scan", extra={"id": listing.external_id, "page": page})
+        LOGGER.debug(
+            "List-stage notifications disabled; waiting for detail scan",
+            extra={"id": listing.external_id, "page": page, "source": provider_config.source_id},
+        )
         return 0
 
-    def _format_message(self, listing: Listing, matched_keywords: list[str] | None = None) -> str:
+    def _format_message(
+        self,
+        listing: Listing,
+        provider_config: ProviderConfig,
+        matched_keywords: list[str] | None = None,
+    ) -> str:
         title = listing.title or "Без названия"
         lines = [
-            f"🛒 Новая закупка ({self._config.source_id})",
+            f"🛒 Новая закупка ({provider_config.source_id})",
             f"Название: {title}",
             f"Ссылка: {listing.url}",
             f"Номер: {listing.external_id}",
