@@ -115,12 +115,13 @@ class MonitorService:
     def _format_message(
         self,
         listing: Listing,
-        provider_config: ProviderConfig,
+        *,
+        source_id: str,
         matched_keywords: list[str] | None = None,
     ) -> str:
         title = listing.title or "Без названия"
         lines = [
-            f"🛒 Новая закупка ({provider_config.source_id})",
+            f"🛒 Новая закупка ({source_id})",
             f"Название: {title}",
             f"Ссылка: {listing.url}",
             f"Номер: {listing.external_id}",
