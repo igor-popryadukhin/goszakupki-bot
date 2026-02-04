@@ -4,8 +4,7 @@ services:
     container_name: purchases-bot
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      SOURCE_ID: goszakupki.by
-      SOURCE_BASE_URL: https://goszakupki.by/tenders/posted
+      SOURCE_IDS: ${SOURCE_IDS:-goszakupki.by,icetrade.by}
       SOURCE_PAGES_DEFAULT: ${SOURCE_PAGES_DEFAULT:-3}
       CHECK_INTERVAL_DEFAULT: ${CHECK_INTERVAL_DEFAULT:-300}
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-30}

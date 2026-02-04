@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+import html
 from textwrap import dedent
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -18,6 +19,7 @@ from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
+from ..monitor.joke_service import JokeService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
 
@@ -60,6 +62,7 @@ def create_router(
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
+    joke_service: JokeService | None,
     provider_configs: list[ProviderConfig],
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
@@ -170,7 +173,9 @@ def create_router(
                 /enable — включить мониторинг
                 /disable — выключить мониторинг
                 /status [source_id] — показать статус (для источника или всех)
+                /detections [source_id] — список детекций за неделю
                 /test [source_id] — тестовое уведомление
+                /joke — прислать шутку
                 /cancel — отменить текущий ввод
                 """
             ).strip()
@@ -248,6 +253,34 @@ def create_router(
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
 
+    @router.message(Command("detections"))
+    async def command_detections(message: Message, command: CommandObject) -> None:
+        prefs = await repo.get_preferences()
+        if not prefs:
+            await message.answer("Сначала отправь /start")
+            return
+        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
+        if source_id is False:
+            await message.answer(_format_sources_hint(provider_map))
+            return
+        await _send_detections_page(
+            message,
+            repo,
+            provider_map,
+            page=1,
+            source_id=source_id,
+            edit=False,
+        )
+
+    @router.message(Command("joke"))
+    async def command_joke(message: Message) -> None:
+        if joke_service is None:
+            await message.answer("Шутки отключены: DeepSeek не настроен.")
+            return
+        sent = await joke_service.send_to_chat(message.chat.id)
+        if not sent:
+            await message.answer("Не удалось получить шутку. Попробуйте ещё раз чуть позже.")
+
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
     async def ru_settings_menu(message: Message) -> None:
@@ -267,6 +300,21 @@ def create_router(
         text = await _format_status(repo, prefs, provider_configs)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
+
+    @router.message(F.text.casefold() == "детекции")
+    async def ru_detections(message: Message) -> None:
+        await _send_detections_page(
+            message,
+            repo,
+            provider_map,
+            page=1,
+            source_id=None,
+            edit=False,
+        )
+
+    @router.message(F.text.casefold() == "шутка")
+    async def ru_joke(message: Message) -> None:
+        await command_joke(message)
 
     @router.message(F.text.casefold() == "помощь")
     async def ru_help(message: Message) -> None:
@@ -312,6 +360,46 @@ def create_router(
     @router.callback_query(F.data == "cancel_clear_det")
     async def clear_detections_cancel_cb(callback: CallbackQuery) -> None:
         await callback.message.answer("Очистка отменена")
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("det_list:"))
+    async def detections_list_cb(callback: CallbackQuery) -> None:
+        if not callback.data:
+            await callback.answer("Нет данных", show_alert=True)
+            return
+        try:
+            _, page_str, raw_source = callback.data.split(":", 2)
+            page = int(page_str)
+        except Exception:
+            await callback.answer("Некорректная страница", show_alert=True)
+            return
+        if page < 1:
+            page = 1
+        source_id = None if raw_source == "all" else raw_source
+        if source_id and source_id not in provider_map:
+            await callback.answer("Неизвестный источник", show_alert=True)
+            return
+        await _send_detections_page(
+            callback.message,
+            repo,
+            provider_map,
+            page=page,
+            source_id=source_id,
+            edit=True,
+        )  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.callback_query(F.data == "det_back_menu")
+    async def detections_back_cb(callback: CallbackQuery) -> None:
+        prefs = await repo.get_preferences()
+        await callback.message.answer(
+            "Настройки",
+            reply_markup=settings_menu_keyboard(prefs.enabled if prefs else False),
+        )
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.answer()
 
     # Глобальная отмена доступна в любом состоянии
@@ -966,6 +1054,77 @@ def _build_clear_detections_keyboard(provider_configs: list[ProviderConfig]) -> 
         rows.append([InlineKeyboardButton(text="🧹 Очистить все источники", callback_data="confirm_clear_det:all")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _send_detections_page(
+    target: Message,
+    repo: Repository,
+    provider_map: dict[str, ProviderConfig],
+    *,
+    page: int,
+    per_page: int = 5,
+    source_id: str | None,
+    edit: bool = False,
+) -> None:
+    since = datetime.utcnow() - timedelta(days=7)
+    total = await repo.count_detections(source_id=source_id, since=since)
+    source_label = source_id or "все источники"
+    header = f"Детекции за последние 7 дней ({source_label})"
+    if total == 0:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅ Назад", callback_data="det_back_menu")]]
+        )
+        if edit:
+            try:
+                await target.edit_text("Детекций за последние 7 дней нет.", reply_markup=kb)
+            except Exception:
+                await target.answer("Детекций за последние 7 дней нет.", reply_markup=kb)
+        else:
+            await target.answer("Детекций за последние 7 дней нет.", reply_markup=kb)
+        return
+    max_page = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, max_page))
+    offset = (page - 1) * per_page
+    rows = await repo.list_detections(
+        since=since,
+        source_id=source_id,
+        limit=per_page,
+        offset=offset,
+    )
+
+    lines: list[str] = [header, ""]
+    index = offset + 1
+    for det_source, ext_id, title, url, first_seen in rows:
+        title_text = html.escape(title or "Без названия")
+        url_text = html.escape(url)
+        source_text = html.escape(det_source)
+        when_text = html.escape(str(first_seen))
+        lines.append(f"{index}. <a href=\"{url_text}\">{title_text}</a>")
+        lines.append(f"{source_text} • {when_text} • {html.escape(ext_id)}")
+        lines.append("")
+        index += 1
+    text = "\n".join(lines).strip()
+
+    nav: list[InlineKeyboardButton] = []
+    source_token = source_id or "all"
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"det_list:{page-1}:{source_token}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"det_list:{page}:{source_token}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="➡", callback_data=f"det_list:{page+1}:{source_token}"))
+    rows_kb: list[list[InlineKeyboardButton]] = []
+    if nav:
+        rows_kb.append(nav)
+    rows_kb.append([InlineKeyboardButton(text="⬅ Назад", callback_data="det_back_menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
+
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            await target.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    else:
+        await target.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
 
 
 # Helpers for keywords management

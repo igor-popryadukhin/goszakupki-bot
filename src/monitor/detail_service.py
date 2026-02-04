@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass
 
@@ -146,7 +147,12 @@ class DetailScanService:
                 else:
                     for chat_id in targets:
                         try:
-                            await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
+                            await self._bot.send_message(
+                                chat_id=chat_id,
+                                text=message,
+                                disable_web_page_preview=False,
+                                parse_mode="HTML",
+                            )
                             notified += 1
                         except Exception:
                             LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
@@ -205,26 +211,56 @@ class DetailScanService:
         submission_deadline: str | None = None,
     ) -> str:
         t = title or "Без названия"
+        title_text = html.escape(t)
+        url_text = html.escape(url)
+        external_id_text = html.escape(external_id)
         lines = [
-            f"🔎 Совпадение в тексте закупки ({source_id})",
-            f"Название: {t}",
-            f"Ссылка: {url}",
-            f"Номер: {external_id}",
+            f"<b>🔎 Совпадение в тексте закупки ({html.escape(source_id)})</b>",
+            f"<b>Название:</b> {title_text}",
+            f"<b>Ссылка:</b> {url_text}",
+            f"<b>Номер:</b> {external_id_text}",
         ]
         if submission_deadline:
-            lines.append(f"Приём сведений прекращается: {submission_deadline}")
+            lines.append(
+                f"<b>Приём сведений прекращается:</b> {html.escape(submission_deadline)}"
+            )
         if semantic_summary:
             summary_clean = " ".join(semantic_summary.split())
             if len(summary_clean) > 280:
                 summary_clean = summary_clean[:277] + "..."
-            lines.append(f"Суть: {summary_clean}")
+            lines.append(f"<b>Суть:</b> {html.escape(summary_clean)}")
         if semantic_details:
-            lines.append("Семантические совпадения:")
+            lines.append("<b>Семантические совпадения:</b>")
             for match in semantic_details:
-                reason = match.reason or "Совпадение по смыслу"
-                reason = " ".join(reason.split())
+                reason = self._humanize_reason(match.reason)
                 if len(reason) > 180:
                     reason = reason[:177] + "..."
-                score_text = f" (оценка {match.score:.2f})" if match.score > 0 else ""
-                lines.append(f"• {match.keyword}: {reason}{score_text}")
-        return "\n".join(lines)
+                score_label = self._format_score_label(match.score)
+                score_text = f" ({score_label} релевантность)" if score_label else ""
+                keyword_text = html.escape(match.keyword)
+                reason_text = html.escape(reason)
+                lines.append(f"• {keyword_text}: {reason_text}{score_text}")
+        return "\n\n".join(lines)
+
+    @staticmethod
+    def _humanize_reason(reason: str) -> str:
+        cleaned = " ".join((reason or "").split())
+        if not cleaned:
+            return "Похоже по смыслу."
+        if cleaned.lower().startswith("похоже"):
+            text = cleaned
+        else:
+            text = f"Похоже по смыслу: {cleaned}"
+        if text[-1] not in ".!?":
+            text += "."
+        return text
+
+    @staticmethod
+    def _format_score_label(score: float) -> str:
+        if score >= 0.8:
+            return "высокая"
+        if score >= 0.6:
+            return "средняя"
+        if score > 0:
+            return "низкая"
+        return ""

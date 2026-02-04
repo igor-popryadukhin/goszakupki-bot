@@ -218,16 +218,16 @@ def _load_provider_config(prefix: str, source_id: str) -> ProviderConfig:
             "prefer_table": True,
         },
         "ICE": {
-            "list_item": "table tbody tr",
-            "title": "a[href]",
-            "link": "a[href]",
+            "list_item": "table.auctions tr[class^='rw-']",
+            "title": "td:nth-child(1) a[href]",
+            "link": "td:nth-child(1) a[href]",
             "base_url": "https://icetrade.by/tenders/all",
             "prefer_table": True,
             "table": {
-                "row": "table tbody tr",
-                "link": "a[href]",
-                "title": "a[href]",
-                "id_cell": "td:nth-child(1)",
+                "row": "table.auctions tr[class^='rw-']",
+                "link": "td:nth-child(1) a[href]",
+                "title": "td:nth-child(1) a[href]",
+                "id_cell": "td:nth-child(4)",
             },
         },
     }

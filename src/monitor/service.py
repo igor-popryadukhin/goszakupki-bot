@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass
 from typing import Sequence
@@ -120,23 +121,26 @@ class MonitorService:
         matched_keywords: list[str] | None = None,
     ) -> str:
         title = listing.title or "Без названия"
+        title_text = html.escape(title)
+        url_text = html.escape(listing.url or "")
+        external_id_text = html.escape(listing.external_id or "")
         lines = [
-            f"🛒 Новая закупка ({source_id})",
-            f"Название: {title}",
-            f"Ссылка: {listing.url}",
-            f"Номер: {listing.external_id}",
+            f"<b>🛒 Новая закупка ({html.escape(source_id)})</b>",
+            f"<b>Название:</b> {title_text}",
+            f"<b>Ссылка:</b> {url_text}",
+            f"<b>Номер:</b> {external_id_text}",
         ]
         if matched_keywords:
             lines.append(f"Совпадение по: {self._format_keywords(matched_keywords)}")
         if getattr(listing, "procedure_type", None):
-            lines.append(f"Вид: {listing.procedure_type}")
+            lines.append(f"<b>Вид:</b> {html.escape(str(listing.procedure_type))}")
         if getattr(listing, "status", None):
-            lines.append(f"Статус: {listing.status}")
+            lines.append(f"<b>Статус:</b> {html.escape(str(listing.status))}")
         if getattr(listing, "deadline", None):
-            lines.append(f"До: {listing.deadline}")
+            lines.append(f"<b>До:</b> {html.escape(str(listing.deadline))}")
         if getattr(listing, "price", None):
-            lines.append(f"Стоимость: {listing.price}")
-        return "\n".join(lines)
+            lines.append(f"<b>Стоимость:</b> {html.escape(str(listing.price))}")
+        return "\n\n".join(lines)
 
     @staticmethod
     def _format_keywords(keywords: list[str], *, limit: int = 5) -> str:
