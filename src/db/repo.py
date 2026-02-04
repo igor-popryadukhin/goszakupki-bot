@@ -481,6 +481,36 @@ class Repository:
             await _commit(session)
             return int(getattr(result, "rowcount", 0) or 0)
 
+    async def list_detections(
+        self,
+        *,
+        since: datetime,
+        source_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[tuple[str, str, str | None, str, datetime]]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(
+                    Detection.source_id,
+                    Detection.external_id,
+                    Detection.title,
+                    Detection.url,
+                    Detection.first_seen,
+                )
+                .where(Detection.first_seen >= since)
+                .order_by(Detection.first_seen.desc(), Detection.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            if source_id:
+                stmt = stmt.where(Detection.source_id == source_id)
+            rows = (await session.execute(stmt)).all()
+            return [
+                (row[0], row[1], row[2], row[3], row[4])  # type: ignore[misc]
+                for row in rows
+            ]
+
     # --- Статистика по detections/notifications ---
     async def count_detections(self, *, source_id: str | None = None, since: datetime | None = None) -> int:
         async with self._session_factory() as session:

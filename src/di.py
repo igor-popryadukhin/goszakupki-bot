@@ -11,6 +11,9 @@ from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
 from .monitor.semantic import DeepSeekSemanticAnalyzer
 from .monitor.detail_scheduler import DetailScanScheduler
+from .monitor.jokes import DeepSeekJokeGenerator
+from .monitor.joke_service import JokeService
+from .monitor.joke_scheduler import JokeScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
@@ -36,8 +39,10 @@ class Container:
                 "DeepSeek semantic analysis enabled", extra={"model": config.deepseek.model}
             )
             self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
+            self.joke_generator = DeepSeekJokeGenerator(config.deepseek)
         else:
             self.semantic_matcher = None
+            self.joke_generator = None
         provider_entries = [
             MonitorService.ProviderEntry(provider=provider, config=provider_config)
             for provider, provider_config in zip(self.providers, config.providers)
@@ -70,6 +75,21 @@ class Container:
             provider_configs=config.providers,
             logging_config=config.logging,
         )
+        if self.joke_generator is not None:
+            self.joke_service = JokeService(
+                generator=self.joke_generator,
+                repository=self.repository,
+                bot=self.bot,
+                auth_state=self.auth_state,
+            )
+            self.joke_scheduler = JokeScheduler(
+                service=self.joke_service,
+                repository=self.repository,
+                logging_config=config.logging,
+            )
+        else:
+            self.joke_service = None
+            self.joke_scheduler = None
 
     def _create_providers(self) -> list[SourceProvider]:
         providers: list[SourceProvider] = []
@@ -99,5 +119,7 @@ class Container:
         finally:
             if self.semantic_matcher is not None:
                 await self.semantic_matcher.close()
+            if self.joke_generator is not None:
+                await self.joke_generator.close()
             await self.engine.dispose()
             await self.bot.session.close()

@@ -8,6 +8,7 @@ def main_menu_keyboard(enabled: bool = False, *, admin: bool = False) -> ReplyKe
     rows = [
         [KeyboardButton(text="Настройки"), KeyboardButton(text="Статус")],
         [KeyboardButton(text=toggle_text), KeyboardButton(text="Помощь")],
+        [KeyboardButton(text="Шутка")],
     ]
     if admin:
         rows.append([KeyboardButton(text="Тест всем")])
@@ -19,6 +20,7 @@ def settings_menu_keyboard(enabled: bool = False) -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="Ключевые слова")],
             [KeyboardButton(text="Интервал"), KeyboardButton(text="Страницы")],
+            [KeyboardButton(text="Детекции")],
             [KeyboardButton(text="Очистить детекции")],
             [KeyboardButton(text="Назад")],
         ],

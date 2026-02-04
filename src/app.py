@@ -32,6 +32,7 @@ async def main() -> None:
         container.scheduler,
         container.detail_scheduler,
         container.detail_service,
+        container.joke_service,
         config.providers,
         config.auth,
         container.auth_state,
@@ -59,12 +60,16 @@ async def main() -> None:
             LOGGER.exception("Failed to close dispatcher storage")
         await container.scheduler.shutdown()
         await container.detail_scheduler.shutdown()
+        if container.joke_scheduler is not None:
+            await container.joke_scheduler.shutdown()
         await container.shutdown()
 
     setup_signal_handlers(shutdown)
 
     await container.scheduler.start()
     await container.detail_scheduler.start()
+    if container.joke_scheduler is not None:
+        await container.joke_scheduler.start()
 
     try:
         await dispatcher.start_polling(container.bot)
