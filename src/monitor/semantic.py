@@ -30,6 +30,7 @@ class SemanticMatch:
 class SemanticAnalysis:
     summary: str
     matches: list[SemanticMatch]
+    submission_deadline: str | None = None
 
 
 class SemanticMatcher:
@@ -122,8 +123,9 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
             "\"\"\"\n\n"
             "Ключевые слова:\n"
             f"{formatted_keywords}\n\n"
-            "Верни JSON вида {\"summary\": \"...\", \"matches\": [{\"keyword\": \"...\", \"score\": 0.0-1.0, \"reason\": \"...\"}]}. "
+            "Верни JSON вида {\"summary\": \"...\", \"matches\": [{\"keyword\": \"...\", \"score\": 0.0-1.0, \"reason\": \"...\"}], \"submission_deadline\": \"...\"|null}. "
             "summary — это краткое описание сути закупки на русском языке. reason — короткое (до 20 слов) объяснение, почему слово подходит."
+            "submission_deadline — дата и время прекращения приёма сведений в формате ДД.ММ.ГГГГ или ДД.ММ.ГГГГ ЧЧ:ММ. Если в тексте нет информации о прекращении приёма сведений, используй null."
             "Используй только ключевые слова из списка. Если совпадений нет, верни {\"matches\": []}."
         )
         payload: dict[str, Any] = {
@@ -172,6 +174,12 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
         if not isinstance(summary, str):
             summary = ""
         summary = summary.strip()
+
+        raw_deadline = parsed.get("submission_deadline")
+        if isinstance(raw_deadline, str):
+            submission_deadline = raw_deadline.strip() or None
+        else:
+            submission_deadline = None
 
         normalized_pairs = [(kw, _normalize_keyword(kw)) for kw in keywords]
         normalized = {norm: kw for kw, norm in normalized_pairs if norm}
@@ -231,8 +239,12 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 extra={"keywords": [match.keyword for match in result], "summary": summary},
             )
 
-        if not result and not summary:
+        if not result and not summary and not submission_deadline:
             return None
 
-        return SemanticAnalysis(summary=summary, matches=result)
+        return SemanticAnalysis(
+            summary=summary,
+            matches=result,
+            submission_deadline=submission_deadline,
+        )
 

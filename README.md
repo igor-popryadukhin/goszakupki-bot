@@ -15,6 +15,8 @@
 
    ```
    TELEGRAM_BOT_TOKEN=123456:ABC...
+   SOURCE_IDS=goszakupki.by
+   SOURCE_PREFIX=GZ
    SOURCE_PAGES_DEFAULT=2
    CHECK_INTERVAL_DEFAULT=300
    HTTP_TIMEOUT_SECONDS=10
@@ -31,15 +33,21 @@
    DEEPSEEK_ENABLED=1
    DEEPSEEK_MODEL=deepseek-chat
    DEEPSEEK_MIN_SCORE=0.6
-   DEEPSEEK_BALANCE_CHECK_ENABLED=1
-   DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS=86400
-   DEEPSEEK_BALANCE_LOW_THRESHOLD=5
+   GZ_SOURCE_BASE_URL=https://goszakupki.by/tenders/posted
    GZ_LIST_ITEM=.tenders-list .tender-card
    GZ_TITLE=.tender-card__title
    GZ_LINK=.tender-card__title a
    GZ_ID_TEXT=.tender-card__meta
    GZ_ID_FROM_HREF=1
    GZ_PREFER_TABLE=1
+   ICE_SOURCE_BASE_URL=https://icetrade.by/tenders/all
+   ICE_LIST_ITEM=table tbody tr
+   ICE_TITLE=a[href]
+   ICE_LINK=a[href]
+   ICE_TABLE_ROW=table tbody tr
+   ICE_TABLE_LINK=a[href]
+   ICE_TABLE_TITLE=a[href]
+   ICE_TABLE_ID_CELL=td:nth-child(1)
    # Ограничение доступа (опционально). Если задать, бот потребует авторизацию /login <логин> <пароль>
    AUTH_LOGIN=admin
    AUTH_PASSWORD=secret
@@ -50,13 +58,23 @@
 
 3. При необходимости добавьте другие переменные из `src/config.py`.
    
-   Переменные `GZ_DETAIL_*` управляют выделением «основного контента» на странице закупки для полнотекстового поиска:
-   - `GZ_DETAIL_MAIN` — CSS селектор контейнера основной области (если не задан, используется набор типичных кандидатов).
-   - `GZ_DETAIL_TEXT_SELECTORS` — CSV-список селекторов внутри основного контейнера; если заданы, текст собирается только из них.
-   - `GZ_DETAIL_EXCLUDE` — CSV-список селекторов, которые удаляются перед извлечением текста (меню, хлебные крошки, кнопки).
+   Источники задаются через `SOURCE_IDS` и префиксы окружения:
+   - `SOURCE_IDS=goszakupki.by,icetrade.by`
+   - `SOURCE_PREFIXES=GZ,ICE` (порядок совпадает с `SOURCE_IDS`)
+   - Для каждого источника используйте переменные с префиксом (`GZ_`, `ICE_`), например `GZ_SOURCE_BASE_URL`, `ICE_SOURCE_BASE_URL` и селекторы `*_LIST_ITEM`, `*_TITLE`, `*_LINK`.
+   
+   Переменные `<PREFIX>_DETAIL_*` управляют выделением «основного контента» на странице закупки для полнотекстового поиска:
+   - `<PREFIX>_DETAIL_MAIN` — CSS селектор контейнера основной области (если не задан, используется набор типичных кандидатов).
+   - `<PREFIX>_DETAIL_TEXT_SELECTORS` — CSV-список селекторов внутри основного контейнера; если заданы, текст собирается только из них.
+   - `<PREFIX>_DETAIL_EXCLUDE` — CSV-список селекторов, которые удаляются перед извлечением текста (меню, хлебные крошки, кнопки).
    
    Парсинг списка:
-   - `GZ_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
+   - `<PREFIX>_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
+   - `<PREFIX>_TABLE_ROW` — CSS селектор строк таблицы (отдельно от карточного листинга).
+   - `<PREFIX>_TABLE_LINK` — CSS селектор ссылки внутри строки таблицы.
+   - `<PREFIX>_TABLE_TITLE` — CSS селектор заголовка внутри строки таблицы (если отличается от ссылки).
+   - `<PREFIX>_TABLE_ID_CELL` — CSS селектор ячейки с номером закупки/ID.
+   - `<PREFIX>_TABLE_ID_FROM_HREF` — если 1, извлекать ID из ссылки (иначе сначала из таблицы).
    
    Параметры детального сканера:
    - `DETAIL_INTERVAL_SECONDS` — интервал тика детсканера (сканер всегда активен). Обрабатывается по одной записи за тик.
@@ -116,6 +134,7 @@
 Примечания
 - На этапе листинга уведомления не отправляются — они генерируются только после детального разбора страницы, где выполняется поиск по ключевым словам (и при необходимости по заголовку, если в тексте нет совпадений).
 - В статусе показаны только отправленные уведомления (засеянные при включении не считаются).
+- Команды `/status` и `/test` принимают необязательный `source_id` (например, `/status icetrade.by`). Без параметров выводится агрегированный результат по всем источникам.
 
 ## Семантический подбор ключевых слов
 
@@ -128,11 +147,5 @@
 1. Получите токен доступа DeepSeek и пропишите его в `DEEPSEEK_API_KEY`.
 2. Убедитесь, что `DEEPSEEK_ENABLED=1` (по умолчанию включается автоматически, если задан ключ).
 3. При необходимости настройте модель (`DEEPSEEK_MODEL`), порог совпадения (`DEEPSEEK_MIN_SCORE`), ограничение на длину текста (`DEEPSEEK_MAX_CHARS`) и число анализируемых ключей (`DEEPSEEK_MAX_KEYWORDS`).
-4. Для контроля остатка средств можно включить ежедневную проверку `GET /user/balance`:
-   - `DEEPSEEK_BALANCE_CHECK_ENABLED=1` включает автопроверку
-   - `DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS=86400` задаёт интервал проверки
-   - `DEEPSEEK_BALANCE_LOW_THRESHOLD=5` задаёт порог предупреждения по `total_balance`
-
-При включённой интеграции бот добавляет команду `/balance` и кнопку `Баланс AI`. Автоматическое напоминание о низком или исчерпанном балансе отправляется не чаще одного раза в сутки в авторизованные чаты.
 
 Если DeepSeek недоступен, бот автоматически возвращается к точному поиску по ключевым словам. В интерфейсе добавления ключей бот показывает рекомендации по формулировке запросов для модели.

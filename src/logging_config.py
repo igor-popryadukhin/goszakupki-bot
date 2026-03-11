@@ -40,6 +40,7 @@ def configure_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
 
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 
     tz = os.getenv("TZ")
     if tz:

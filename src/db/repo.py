@@ -1,25 +1,32 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
-import json
 
-from sqlalchemy import select, or_, func, delete
 from sqlalchemy import and_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .models import (
-    Base,
-    Detection,
-    Notification,
     AppSettings,
     AuthSession,
     AuthorizedChat,
     AuthorizedUser,
-    DeepSeekBalanceState,
+    Base,
+    Detection,
+    Notification,
 )
+
+
+class RepositoryError(Exception):
+    """Base class for repository-level errors."""
+
+
+class StorageFullError(RepositoryError):
+    """Raised when the database cannot commit changes due to disk exhaustion."""
 
 
 @dataclass(slots=True)
@@ -28,14 +35,6 @@ class AppPreferences:
     interval_seconds: int
     pages: int
     enabled: bool
-
-
-@dataclass(slots=True)
-class BalanceAlertState:
-    last_checked_at: datetime | None
-    last_alert_date: str | None
-    last_alert_status: str | None
-    last_snapshot: dict | None
 
 
 class Repository:
@@ -53,7 +52,7 @@ class Repository:
                     enabled=False,
                 )
                 session.add(settings)
-                await session.commit()
+                await _commit(session)
             return AppPreferences(
                 keywords=_split_keywords(settings.keywords),
                 interval_seconds=settings.interval_seconds,
@@ -68,7 +67,7 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.keywords = normalized
-            await session.commit()
+            await _commit(session)
 
     async def add_keyword(self, keyword: str) -> bool:
         k = (keyword or "").strip()
@@ -85,7 +84,7 @@ class Repository:
                 return False
             items.append(k)
             settings.keywords = "\n".join(items)
-            await session.commit()
+            await _commit(session)
             return True
 
     async def remove_keyword(self, keyword: str) -> bool:
@@ -102,7 +101,7 @@ class Repository:
             if len(items) == before:
                 return False
             settings.keywords = "\n".join(items)
-            await session.commit()
+            await _commit(session)
             return True
 
     async def clear_keywords(self) -> None:
@@ -111,7 +110,7 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.keywords = ""
-            await session.commit()
+            await _commit(session)
 
     async def set_interval(self, interval_seconds: int) -> None:
         async with self._session_factory() as session:
@@ -119,7 +118,7 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.interval_seconds = interval_seconds
-            await session.commit()
+            await _commit(session)
 
     async def set_pages(self, pages: int) -> None:
         async with self._session_factory() as session:
@@ -127,7 +126,7 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.pages = pages
-            await session.commit()
+            await _commit(session)
 
     async def set_enabled(self, enabled: bool) -> None:
         async with self._session_factory() as session:
@@ -135,7 +134,7 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.enabled = enabled
-            await session.commit()
+            await _commit(session)
 
     async def get_preferences(self) -> AppPreferences | None:
         async with self._session_factory() as session:
@@ -186,6 +185,10 @@ class Repository:
             except IntegrityError:
                 await session.rollback()
                 return False
+            except OperationalError as exc:
+                await session.rollback()
+                _raise_storage_full(exc)
+                raise
 
     # --- Детальный скан: выборка и отметки ---
 
@@ -250,7 +253,7 @@ class Repository:
             if det is None:
                 return
             det.detail_loaded = bool(success)
-            await session.commit()
+            await _commit(session)
 
     async def complete_detail_scan(self, detection_id: int) -> None:
         async with self._session_factory() as session:
@@ -259,7 +262,7 @@ class Repository:
                 return
             det.detail_scan_pending = False
             det.detail_scanned_at = datetime.utcnow()
-            await session.commit()
+            await _commit(session)
 
     async def schedule_detail_retry(self, detection_id: int, next_retry_at: datetime) -> int:
         async with self._session_factory() as session:
@@ -268,7 +271,7 @@ class Repository:
                 return 0
             det.detail_retry_count = (getattr(det, "detail_retry_count", 0) or 0) + 1
             det.detail_next_retry_at = next_retry_at
-            await session.commit()
+            await _commit(session)
             return det.detail_retry_count
 
     async def has_notification(self, chat_id: int, source_id: str, external_id: str) -> bool:
@@ -287,6 +290,10 @@ class Repository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
+            except OperationalError as exc:
+                await session.rollback()
+                _raise_storage_full(exc)
+                raise
 
     # Global notifications (chat_id = 0)
     async def has_notification_global(self, source_id: str, external_id: str) -> bool:
@@ -315,6 +322,10 @@ class Repository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
+            except OperationalError as exc:
+                await session.rollback()
+                _raise_storage_full(exc)
+                raise
 
     # --- Persisted auth session (single-user global auth) ---
 
@@ -333,14 +344,14 @@ class Repository:
                 session.add(row)
             else:
                 row.chat_id = chat_id
-            await session.commit()
+            await _commit(session)
 
     async def clear_authorized_chat_id(self) -> None:
         async with self._session_factory() as session:
             row = await session.scalar(select(AuthSession).where(AuthSession.id == 1))
             if row is not None:
                 row.chat_id = None
-                await session.commit()
+                await _commit(session)
 
     # New multi-chat API
     async def list_authorized_chats(self) -> list[int]:
@@ -356,18 +367,22 @@ class Repository:
                     await session.commit()
                 except IntegrityError:
                     await session.rollback()
+                except OperationalError as exc:
+                    await session.rollback()
+                    _raise_storage_full(exc)
+                    raise
 
     async def remove_authorized_chat(self, chat_id: int) -> None:
         async with self._session_factory() as session:
             row = await session.get(AuthorizedChat, chat_id)
             if row is not None:
                 await session.delete(row)
-                await session.commit()
+                await _commit(session)
 
     async def clear_all_authorized_chats(self) -> None:
         async with self._session_factory() as session:
             await session.execute(delete(AuthorizedChat))
-            await session.commit()
+            await _commit(session)
 
     # Authorized users (by Telegram user_id)
     async def list_authorized_users(self) -> list[int]:
@@ -383,18 +398,22 @@ class Repository:
                     await session.commit()
                 except IntegrityError:
                     await session.rollback()
+                except OperationalError as exc:
+                    await session.rollback()
+                    _raise_storage_full(exc)
+                    raise
 
     async def remove_authorized_user(self, user_id: int) -> None:
         async with self._session_factory() as session:
             row = await session.get(AuthorizedUser, user_id)
             if row is not None:
                 await session.delete(row)
-                await session.commit()
+                await _commit(session)
 
     async def clear_all_authorized_users(self) -> None:
         async with self._session_factory() as session:
             await session.execute(delete(AuthorizedUser))
-            await session.commit()
+            await _commit(session)
 
     async def seed_notifications_global_for_existing(self, source_id: str, *, limit: int | None = None) -> int:
         """Mark existing detections as already notified for the chat to avoid floods on enable.
@@ -429,6 +448,10 @@ class Repository:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
+            except OperationalError as exc:
+                await session.rollback()
+                _raise_storage_full(exc)
+                raise
             return created
 
     # Authorization persistence removed; handled in-memory for this session
@@ -455,8 +478,38 @@ class Repository:
             else:
                 stmt = delete(Detection)
             result = await session.execute(stmt)
-            await session.commit()
+            await _commit(session)
             return int(getattr(result, "rowcount", 0) or 0)
+
+    async def list_detections(
+        self,
+        *,
+        since: datetime,
+        source_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[tuple[str, str, str | None, str, datetime]]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(
+                    Detection.source_id,
+                    Detection.external_id,
+                    Detection.title,
+                    Detection.url,
+                    Detection.first_seen,
+                )
+                .where(Detection.first_seen >= since)
+                .order_by(Detection.first_seen.desc(), Detection.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            if source_id:
+                stmt = stmt.where(Detection.source_id == source_id)
+            rows = (await session.execute(stmt)).all()
+            return [
+                (row[0], row[1], row[2], row[3], row[4])  # type: ignore[misc]
+                for row in rows
+            ]
 
     # --- Статистика по detections/notifications ---
     async def count_detections(self, *, source_id: str | None = None, since: datetime | None = None) -> int:
@@ -491,47 +544,63 @@ class Repository:
                 stmt = stmt.where(Notification.source_id == source_id)
             return await session.scalar(stmt)
 
-    async def get_balance_alert_state(self) -> BalanceAlertState:
-        async with self._session_factory() as session:
-            state = await self._get_or_create_balance_state(session)
-            snapshot = None
-            if state.last_snapshot_json:
-                try:
-                    snapshot = json.loads(state.last_snapshot_json)
-                except json.JSONDecodeError:
-                    snapshot = None
-            return BalanceAlertState(
-                last_checked_at=state.last_checked_at,
-                last_alert_date=state.last_alert_date,
-                last_alert_status=state.last_alert_status,
-                last_snapshot=snapshot,
-            )
 
-    async def update_balance_alert_state(
-        self,
-        *,
-        last_checked_at: datetime,
-        last_snapshot: dict,
-        last_alert_date: str | None = None,
-        last_alert_status: str | None = None,
-    ) -> None:
-        async with self._session_factory() as session:
-            state = await self._get_or_create_balance_state(session)
-            state.last_checked_at = last_checked_at
-            state.last_snapshot_json = json.dumps(last_snapshot, ensure_ascii=False)
-            if last_alert_date is not None:
-                state.last_alert_date = last_alert_date
-            if last_alert_status is not None:
-                state.last_alert_status = last_alert_status
-            await session.commit()
+def _raise_storage_full(exc: OperationalError) -> None:
+    if _is_storage_full_error(exc):
+        raise StorageFullError("Database storage is full") from exc
 
-    async def _get_or_create_balance_state(self, session: AsyncSession) -> DeepSeekBalanceState:
-        state = await session.get(DeepSeekBalanceState, 1)
-        if state is None:
-            state = DeepSeekBalanceState(id=1)
-            session.add(state)
-            await session.flush()
-        return state
+
+async def _commit(session: AsyncSession) -> None:
+    try:
+        await session.commit()
+    except OperationalError as exc:
+        await session.rollback()
+        _raise_storage_full(exc)
+        raise
+
+
+def _is_storage_full_error(exc: OperationalError) -> bool:
+    patterns = (
+        "database or disk is full",
+        "database is full",
+        "disk full",
+        "sqlite_full",
+    )
+
+    def _has_pattern(value: object) -> bool:
+        if isinstance(value, str):
+            lowered = value.lower()
+            return any(pattern in lowered for pattern in patterns)
+        return False
+
+    orig = getattr(exc, "orig", None)
+    if isinstance(orig, sqlite3.Error):
+        code = getattr(orig, "sqlite_errorcode", None)
+        if code == sqlite3.SQLITE_FULL:
+            return True
+        errno = getattr(orig, "errno", None)
+        if errno == sqlite3.SQLITE_FULL:
+            return True
+        name = getattr(orig, "sqlite_errorname", None)
+        if _has_pattern(name):
+            return True
+        args = getattr(orig, "args", None)
+        if args:
+            for arg in args:
+                if _has_pattern(arg):
+                    return True
+        if _has_pattern(str(orig)):
+            return True
+
+    # Fallback to inspecting the SQLAlchemy wrapper itself
+    if _has_pattern(str(exc)):
+        return True
+    args = getattr(exc, "args", None)
+    if args:
+        for arg in args:
+            if _has_pattern(arg):
+                return True
+    return False
 
 
 def _split_keywords(text: str) -> list[str]:

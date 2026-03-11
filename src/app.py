@@ -20,8 +20,9 @@ async def main() -> None:
     configure_logging(config.logging.level)
     container = Container(config)
     await container.init_database()
-    if hasattr(container.provider, "startup"):
-        await getattr(container.provider, "startup")()
+    for provider in container.providers:
+        if hasattr(provider, "startup"):
+            await getattr(provider, "startup")()
 
     # Load persisted authorization state
     await container.auth_state.load()
@@ -31,9 +32,8 @@ async def main() -> None:
         container.scheduler,
         container.detail_scheduler,
         container.detail_service,
-        container.deepseek_balance_service,
-        config.provider,
-        config.deepseek,
+        container.joke_service,
+        config.providers,
         config.auth,
         container.auth_state,
     )
@@ -60,14 +60,16 @@ async def main() -> None:
             LOGGER.exception("Failed to close dispatcher storage")
         await container.scheduler.shutdown()
         await container.detail_scheduler.shutdown()
-        await container.deepseek_balance_scheduler.shutdown()
+        if container.joke_scheduler is not None:
+            await container.joke_scheduler.shutdown()
         await container.shutdown()
 
     setup_signal_handlers(shutdown)
 
     await container.scheduler.start()
     await container.detail_scheduler.start()
-    await container.deepseek_balance_scheduler.start()
+    if container.joke_scheduler is not None:
+        await container.joke_scheduler.start()
 
     try:
         await dispatcher.start_polling(container.bot)

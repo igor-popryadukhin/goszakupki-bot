@@ -37,6 +37,13 @@ def _get_float(name: str, default: float) -> float:
         raise ValueError(f"Invalid float for {name}: {value}")
 
 
+def _split_csv(name: str) -> list[str]:
+    raw = os.getenv(name)
+    if not raw:
+        return []
+    return [seg.strip() for seg in raw.split(",") if seg.strip()]
+
+
 @dataclass(slots=True)
 class TelegramConfig:
     token: str
@@ -61,6 +68,15 @@ class HttpSelectorsConfig:
 
 
 @dataclass(slots=True)
+class HttpTableSelectorsConfig:
+    row: str
+    link: str
+    title: Optional[str] = None
+    id_cell: Optional[str] = None
+    id_from_href: bool = False
+
+
+@dataclass(slots=True)
 class HttpDetailSelectorsConfig:
     # Основной контейнер подробной страницы (CSS). Если пусто — используем fallback‑список в провайдере
     main: Optional[str] = None
@@ -81,6 +97,7 @@ class ProviderConfig:
     http_concurrency: int
     rate_limit_rps: float
     selectors: HttpSelectorsConfig
+    table_selectors: Optional[HttpTableSelectorsConfig] = None
     detail_selectors: HttpDetailSelectorsConfig = field(default_factory=HttpDetailSelectorsConfig)
     prefer_table: bool = False
     # Секция детального сканирования
@@ -130,7 +147,7 @@ class LoggingConfig:
 class AppConfig:
     telegram: TelegramConfig
     database: DatabaseConfig
-    provider: ProviderConfig
+    providers: list[ProviderConfig]
     deepseek: DeepSeekConfig
     logging: LoggingConfig
 
@@ -145,53 +162,124 @@ class AppConfig:
 
     auth: "AppConfig.AuthConfig" = field(default_factory=lambda: AppConfig.AuthConfig())
 
+    @property
+    def provider(self) -> ProviderConfig:
+        if not self.providers:
+            raise RuntimeError("No providers configured")
+        return self.providers[0]
 
-def load_config() -> AppConfig:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
-    db_path = Path(os.getenv("DB_PATH", "/data/app.db"))
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+def _resolve_source_prefixes(source_ids: list[str]) -> list[str]:
+    explicit_prefixes = _split_csv("SOURCE_PREFIXES")
+    default_prefix_map = {
+        "goszakupki.by": "GZ",
+        "icetrade.by": "ICE",
+    }
+    if explicit_prefixes:
+        if len(explicit_prefixes) != len(source_ids):
+            raise ValueError("SOURCE_PREFIXES length must match SOURCE_IDS")
+        return explicit_prefixes
+    if len(source_ids) == 1:
+        source_id = source_ids[0]
+        prefix = os.getenv("SOURCE_PREFIX") or default_prefix_map.get(source_id)
+        if not prefix:
+            raise ValueError("SOURCE_PREFIX is required for custom SOURCE_IDS")
+        return [prefix]
+    prefixes: list[str] = []
+    missing: list[str] = []
+    for source_id in source_ids:
+        prefix = default_prefix_map.get(source_id)
+        if not prefix:
+            missing.append(source_id)
+            prefix = ""
+        prefixes.append(prefix)
+    if missing:
+        raise ValueError(f"SOURCE_PREFIXES required for: {', '.join(missing)}")
+    return prefixes
 
+
+def _get_prefixed(name: str, prefix: str, default: Optional[str] = None) -> Optional[str]:
+    key = f"{prefix}_{name}"
+    value = os.getenv(key)
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _get_prefixed_required(name: str, prefix: str, default: Optional[str] = None) -> str:
+    value = _get_prefixed(name, prefix, default)
+    if value is None or value == "":
+        key = f"{prefix}_{name}"
+        raise RuntimeError(f"{key} is not set")
+    return value
+
+
+def _load_provider_config(prefix: str, source_id: str) -> ProviderConfig:
+    prefix = prefix.upper()
+    default_selectors = {
+        "GZ": {
+            "list_item": ".tenders-list .tender-card",
+            "title": ".tender-card__title",
+            "link": ".tender-card__title a",
+            "base_url": "https://goszakupki.by/tenders/posted",
+            "prefer_table": True,
+        },
+        "ICE": {
+            "list_item": "table.auctions tr[class^='rw-']",
+            "title": "td:nth-child(1) a[href]",
+            "link": "td:nth-child(1) a[href]",
+            "base_url": "https://icetrade.by/tenders/all",
+            "prefer_table": True,
+            "table": {
+                "row": "table.auctions tr[class^='rw-']",
+                "link": "td:nth-child(1) a[href]",
+                "title": "td:nth-child(1) a[href]",
+                "id_cell": "td:nth-child(4)",
+            },
+        },
+    }
+    defaults = default_selectors.get(prefix, {})
     selectors = HttpSelectorsConfig(
-        list_item=os.getenv("GZ_LIST_ITEM", ".tenders-list .tender-card"),
-        title=os.getenv("GZ_TITLE", ".tender-card__title"),
-        link=os.getenv("GZ_LINK", ".tender-card__title a"),
-        id_text=os.getenv("GZ_ID_TEXT"),
-        id_from_href=_get_bool("GZ_ID_FROM_HREF", False),
+        list_item=_get_prefixed_required("LIST_ITEM", prefix, defaults.get("list_item")),
+        title=_get_prefixed_required("TITLE", prefix, defaults.get("title")),
+        link=_get_prefixed_required("LINK", prefix, defaults.get("link")),
+        id_text=_get_prefixed("ID_TEXT", prefix),
+        id_from_href=_get_bool(f"{prefix}_ID_FROM_HREF", False),
     )
-
-    # Детальные селекторы
-    def _split_csv(name: str) -> list[str]:
-        raw = os.getenv(name)
-        if not raw:
-            return []
-        return [seg.strip() for seg in raw.split(",") if seg.strip()]
-
+    table_defaults = defaults.get("table", {}) if isinstance(defaults, dict) else {}
+    table_row = _get_prefixed("TABLE_ROW", prefix, table_defaults.get("row"))
+    table_selectors = None
+    if table_row:
+        table_selectors = HttpTableSelectorsConfig(
+            row=table_row,
+            link=_get_prefixed_required("TABLE_LINK", prefix, table_defaults.get("link")),
+            title=_get_prefixed("TABLE_TITLE", prefix, table_defaults.get("title")),
+            id_cell=_get_prefixed("TABLE_ID_CELL", prefix, table_defaults.get("id_cell")),
+            id_from_href=_get_bool(f"{prefix}_TABLE_ID_FROM_HREF", bool(table_defaults.get("id_from_href", False))),
+        )
     detail_selectors = HttpDetailSelectorsConfig(
-        main=os.getenv("GZ_DETAIL_MAIN") or None,
-        text_selectors=_split_csv("GZ_DETAIL_TEXT_SELECTORS"),
-        exclude=_split_csv("GZ_DETAIL_EXCLUDE"),
+        main=_get_prefixed("DETAIL_MAIN", prefix) or None,
+        text_selectors=_split_csv(f"{prefix}_DETAIL_TEXT_SELECTORS"),
+        exclude=_split_csv(f"{prefix}_DETAIL_EXCLUDE"),
     )
 
-    # Детскан: интервал берём из нового ENV, либо из старого (для обратной совместимости)
     detail_interval = _get_int("DETAIL_INTERVAL_SECONDS", _get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60))
     detail_max_retries = _get_int("DETAIL_MAX_RETRIES", 5)
     detail_backoff_base = _get_int("DETAIL_BACKOFF_BASE_SECONDS", 60)
     detail_backoff_factor = _get_float("DETAIL_BACKOFF_FACTOR", 2.0)
     detail_backoff_max = _get_int("DETAIL_BACKOFF_MAX_SECONDS", 3600)
 
-    provider_config = ProviderConfig(
-        source_id=os.getenv("SOURCE_ID", "goszakupki.by"),
-        base_url=os.getenv("SOURCE_BASE_URL", "https://goszakupki.by/tenders/posted"),
-        pages_default=_get_int("SOURCE_PAGES_DEFAULT", 2),
-        check_interval_default=_get_int("CHECK_INTERVAL_DEFAULT", 300),
+    return ProviderConfig(
+        source_id=source_id,
+        base_url=_get_prefixed_required("SOURCE_BASE_URL", prefix, defaults.get("base_url")),
+        pages_default=_get_int(f"{prefix}_PAGES_DEFAULT", _get_int("SOURCE_PAGES_DEFAULT", 2)),
+        check_interval_default=_get_int(f"{prefix}_CHECK_INTERVAL_DEFAULT", _get_int("CHECK_INTERVAL_DEFAULT", 300)),
         detail_check_interval_seconds=_get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60),
         http_timeout_seconds=_get_int("HTTP_TIMEOUT_SECONDS", 10),
         http_concurrency=_get_int("HTTP_CONCURRENCY", 3),
         rate_limit_rps=_get_float("RATE_LIMIT_RPS", 2.0),
         selectors=selectors,
+        table_selectors=table_selectors,
         detail_selectors=detail_selectors,
         detail=ProviderConfig.DetailScanConfig(
             interval_seconds=detail_interval,
@@ -202,8 +290,26 @@ def load_config() -> AppConfig:
         ),
         use_playwright=_get_bool("USE_PLAYWRIGHT", False),
         http_verify_ssl=_get_bool("HTTP_VERIFY_SSL", True),
-        prefer_table=_get_bool("GZ_PREFER_TABLE", True),
+        prefer_table=_get_bool(f"{prefix}_PREFER_TABLE", bool(defaults.get("prefer_table", False))),
     )
+
+
+def load_config() -> AppConfig:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    db_path = Path(os.getenv("DB_PATH", "/data/app.db"))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    source_ids = _split_csv("SOURCE_IDS")
+    if not source_ids:
+        source_ids = [os.getenv("SOURCE_ID", "goszakupki.by")]
+    prefixes = _resolve_source_prefixes(source_ids)
+    providers = [
+        _load_provider_config(prefix=prefix, source_id=source_id)
+        for source_id, prefix in zip(source_ids, prefixes)
+    ]
 
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY") or None
     deepseek_enabled = _get_bool("DEEPSEEK_ENABLED", bool(deepseek_api_key))
@@ -226,7 +332,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
-        provider=provider_config,
+        providers=providers,
         deepseek=deepseek_config,
         logging=LoggingConfig(),
         auth=AppConfig.AuthConfig(

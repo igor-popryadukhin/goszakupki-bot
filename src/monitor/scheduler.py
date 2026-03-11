@@ -19,12 +19,12 @@ class MonitorScheduler:
         *,
         service: MonitorService,
         repository: Repository,
-        provider_config: ProviderConfig,
+        provider_configs: list[ProviderConfig],
         logging_config: LoggingConfig,
     ) -> None:
         self._service = service
         self._repo = repository
-        self._provider_config = provider_config
+        self._provider_configs = provider_configs
         self._scheduler = AsyncIOScheduler(timezone=logging_config.timezone)
         self._job = None
 
@@ -62,4 +62,7 @@ class MonitorScheduler:
         prefs = await self._repo.get_preferences()
         if prefs and prefs.interval_seconds > 0:
             return prefs.interval_seconds
-        return max(self._provider_config.check_interval_default, 60)
+        if not self._provider_configs:
+            return 60
+        interval = min(cfg.check_interval_default for cfg in self._provider_configs)
+        return max(interval, 60)

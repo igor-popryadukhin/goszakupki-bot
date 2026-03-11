@@ -5,17 +5,19 @@ import logging
 from aiogram import Bot, Dispatcher
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from .config import AppConfig
+from .config import AppConfig, ProviderConfig
 from .db.repo import Repository, init_db
 from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
 from .monitor.semantic import DeepSeekSemanticAnalyzer
 from .monitor.detail_scheduler import DetailScanScheduler
-from .monitor.deepseek_balance import DeepSeekBalanceClient, DeepSeekBalanceService
-from .monitor.deepseek_balance_scheduler import DeepSeekBalanceScheduler
+from .monitor.jokes import DeepSeekJokeGenerator
+from .monitor.joke_service import JokeService
+from .monitor.joke_scheduler import JokeScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
+from .provider.icetrade_http import IcetradeHttpProvider
 from .tg.bot import create_bot, create_dispatcher
 from .tg.auth_state import AuthState
 
@@ -30,77 +32,94 @@ class Container:
         self.repository = Repository(self.session_factory)
         self.bot: Bot = create_bot(config.telegram.token)
         self.dispatcher: Dispatcher = create_dispatcher()
-        self.provider: SourceProvider = self._create_provider()
+        self.providers: list[SourceProvider] = self._create_providers()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
         if config.deepseek.enabled and config.deepseek.api_key:
             LOGGER.info(
                 "DeepSeek semantic analysis enabled", extra={"model": config.deepseek.model}
             )
             self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
+            self.joke_generator = DeepSeekJokeGenerator(config.deepseek)
         else:
             self.semantic_matcher = None
-        if config.deepseek.enabled and config.deepseek.api_key:
-            self.deepseek_balance_client = DeepSeekBalanceClient(config.deepseek)
-            self.deepseek_balance_service = DeepSeekBalanceService(
-                client=self.deepseek_balance_client,
-                repository=self.repository,
-                bot=self.bot,
-                auth_state=self.auth_state,
-                deepseek_config=config.deepseek,
-                logging_config=config.logging,
-            )
-        else:
-            self.deepseek_balance_client = None
-            self.deepseek_balance_service = None
+            self.joke_generator = None
+        provider_entries = [
+            MonitorService.ProviderEntry(provider=provider, config=provider_config)
+            for provider, provider_config in zip(self.providers, config.providers)
+        ]
         self.monitor_service = MonitorService(
-            provider=self.provider,
+            providers=provider_entries,
             repository=self.repository,
             bot=self.bot,
-            provider_config=config.provider,
             auth_state=self.auth_state,
         )
         self.scheduler = MonitorScheduler(
             service=self.monitor_service,
             repository=self.repository,
-            provider_config=config.provider,
+            provider_configs=config.providers,
             logging_config=config.logging,
         )
         self.detail_service = DetailScanService(
-            provider=self.provider,
+            providers=[
+                DetailScanService.ProviderEntry(provider=provider, config=provider_config)
+                for provider, provider_config in zip(self.providers, config.providers)
+            ],
             repository=self.repository,
             bot=self.bot,
-            provider_config=config.provider,
             auth_state=self.auth_state,
             semantic_matcher=self.semantic_matcher,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
             repository=self.repository,
-            provider_config=config.provider,
+            provider_configs=config.providers,
             logging_config=config.logging,
         )
-        self.deepseek_balance_scheduler = DeepSeekBalanceScheduler(
-            service=self.deepseek_balance_service,
-            deepseek_config=config.deepseek,
-            logging_config=config.logging,
-        )
+        if self.joke_generator is not None:
+            self.joke_service = JokeService(
+                generator=self.joke_generator,
+                repository=self.repository,
+                bot=self.bot,
+                auth_state=self.auth_state,
+            )
+            self.joke_scheduler = JokeScheduler(
+                service=self.joke_service,
+                repository=self.repository,
+                logging_config=config.logging,
+            )
+        else:
+            self.joke_service = None
+            self.joke_scheduler = None
 
-    def _create_provider(self) -> SourceProvider:
-        if self.config.provider.use_playwright:
-            LOGGER.warning("Playwright provider requested but not fully implemented; falling back to HTTP provider")
-        return GoszakupkiHttpProvider(self.config.provider)
+    def _create_providers(self) -> list[SourceProvider]:
+        providers: list[SourceProvider] = []
+        for provider_config in self.config.providers:
+            if provider_config.use_playwright:
+                LOGGER.warning(
+                    "Playwright provider requested but not fully implemented; falling back to HTTP provider",
+                    extra={"source_id": provider_config.source_id},
+                )
+            providers.append(self._build_http_provider(provider_config))
+        return providers
+
+    @staticmethod
+    def _build_http_provider(provider_config: ProviderConfig) -> SourceProvider:
+        if provider_config.source_id == "icetrade.by":
+            return IcetradeHttpProvider(provider_config)
+        return GoszakupkiHttpProvider(provider_config)
 
     async def init_database(self) -> None:
         await init_db(self.engine)
 
     async def shutdown(self) -> None:
         try:
-            if hasattr(self.provider, "shutdown"):
-                await getattr(self.provider, "shutdown")()
+            for provider in self.providers:
+                if hasattr(provider, "shutdown"):
+                    await getattr(provider, "shutdown")()
         finally:
             if self.semantic_matcher is not None:
                 await self.semantic_matcher.close()
-            if self.deepseek_balance_client is not None:
-                await self.deepseek_balance_client.close()
+            if self.joke_generator is not None:
+                await self.joke_generator.close()
             await self.engine.dispose()
             await self.bot.session.close()
