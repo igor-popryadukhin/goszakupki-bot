@@ -31,7 +31,9 @@ async def main() -> None:
         container.scheduler,
         container.detail_scheduler,
         container.detail_service,
+        container.deepseek_balance_service,
         config.provider,
+        config.deepseek,
         config.auth,
         container.auth_state,
     )
@@ -58,12 +60,14 @@ async def main() -> None:
             LOGGER.exception("Failed to close dispatcher storage")
         await container.scheduler.shutdown()
         await container.detail_scheduler.shutdown()
+        await container.deepseek_balance_scheduler.shutdown()
         await container.shutdown()
 
     setup_signal_handlers(shutdown)
 
     await container.scheduler.start()
     await container.detail_scheduler.start()
+    await container.deepseek_balance_scheduler.start()
 
     try:
         await dispatcher.start_polling(container.bot)

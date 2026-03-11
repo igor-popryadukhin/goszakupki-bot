@@ -107,10 +107,17 @@ class DeepSeekConfig:
     min_score: float = 0.6
     max_chars: int = 6000
     max_keywords: int = 25
+    balance_check_enabled: bool = False
+    balance_check_interval_seconds: int = 86400
+    balance_low_threshold: float = 5.0
 
     @property
     def api_url(self) -> str:
         return f"{self.base_url.rstrip('/')}/chat/completions"
+
+    @property
+    def balance_api_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/user/balance"
 
 
 @dataclass(slots=True)
@@ -211,6 +218,9 @@ def load_config() -> AppConfig:
         min_score=_get_float("DEEPSEEK_MIN_SCORE", 0.6),
         max_chars=_get_int("DEEPSEEK_MAX_CHARS", 6000),
         max_keywords=_get_int("DEEPSEEK_MAX_KEYWORDS", 25),
+        balance_check_enabled=_get_bool("DEEPSEEK_BALANCE_CHECK_ENABLED", deepseek_enabled),
+        balance_check_interval_seconds=_get_int("DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS", 86400),
+        balance_low_threshold=_get_float("DEEPSEEK_BALANCE_LOW_THRESHOLD", 5.0),
     )
 
     return AppConfig(

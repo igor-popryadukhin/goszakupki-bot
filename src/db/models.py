@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -81,4 +81,11 @@ class Notification(Base):
     sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
-# AuthorizedChat removed: authorization is kept in-memory per bot session
+class DeepSeekBalanceState(Base):
+    __tablename__ = "deepseek_balance_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False, default=1)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_alert_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    last_alert_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -3,13 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
+import json
 
 from sqlalchemy import select, or_, func, delete
 from sqlalchemy import and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from .models import Base, Detection, Notification, AppSettings, AuthSession, AuthorizedChat, AuthorizedUser
+from .models import (
+    Base,
+    Detection,
+    Notification,
+    AppSettings,
+    AuthSession,
+    AuthorizedChat,
+    AuthorizedUser,
+    DeepSeekBalanceState,
+)
 
 
 @dataclass(slots=True)
@@ -18,6 +28,14 @@ class AppPreferences:
     interval_seconds: int
     pages: int
     enabled: bool
+
+
+@dataclass(slots=True)
+class BalanceAlertState:
+    last_checked_at: datetime | None
+    last_alert_date: str | None
+    last_alert_status: str | None
+    last_snapshot: dict | None
 
 
 class Repository:
@@ -472,6 +490,48 @@ class Repository:
             if source_id:
                 stmt = stmt.where(Notification.source_id == source_id)
             return await session.scalar(stmt)
+
+    async def get_balance_alert_state(self) -> BalanceAlertState:
+        async with self._session_factory() as session:
+            state = await self._get_or_create_balance_state(session)
+            snapshot = None
+            if state.last_snapshot_json:
+                try:
+                    snapshot = json.loads(state.last_snapshot_json)
+                except json.JSONDecodeError:
+                    snapshot = None
+            return BalanceAlertState(
+                last_checked_at=state.last_checked_at,
+                last_alert_date=state.last_alert_date,
+                last_alert_status=state.last_alert_status,
+                last_snapshot=snapshot,
+            )
+
+    async def update_balance_alert_state(
+        self,
+        *,
+        last_checked_at: datetime,
+        last_snapshot: dict,
+        last_alert_date: str | None = None,
+        last_alert_status: str | None = None,
+    ) -> None:
+        async with self._session_factory() as session:
+            state = await self._get_or_create_balance_state(session)
+            state.last_checked_at = last_checked_at
+            state.last_snapshot_json = json.dumps(last_snapshot, ensure_ascii=False)
+            if last_alert_date is not None:
+                state.last_alert_date = last_alert_date
+            if last_alert_status is not None:
+                state.last_alert_status = last_alert_status
+            await session.commit()
+
+    async def _get_or_create_balance_state(self, session: AsyncSession) -> DeepSeekBalanceState:
+        state = await session.get(DeepSeekBalanceState, 1)
+        if state is None:
+            state = DeepSeekBalanceState(id=1)
+            session.add(state)
+            await session.flush()
+        return state
 
 
 def _split_keywords(text: str) -> list[str]:

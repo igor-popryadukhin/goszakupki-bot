@@ -31,6 +31,9 @@
    DEEPSEEK_ENABLED=1
    DEEPSEEK_MODEL=deepseek-chat
    DEEPSEEK_MIN_SCORE=0.6
+   DEEPSEEK_BALANCE_CHECK_ENABLED=1
+   DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS=86400
+   DEEPSEEK_BALANCE_LOW_THRESHOLD=5
    GZ_LIST_ITEM=.tenders-list .tender-card
    GZ_TITLE=.tender-card__title
    GZ_LINK=.tender-card__title a
@@ -125,5 +128,11 @@
 1. Получите токен доступа DeepSeek и пропишите его в `DEEPSEEK_API_KEY`.
 2. Убедитесь, что `DEEPSEEK_ENABLED=1` (по умолчанию включается автоматически, если задан ключ).
 3. При необходимости настройте модель (`DEEPSEEK_MODEL`), порог совпадения (`DEEPSEEK_MIN_SCORE`), ограничение на длину текста (`DEEPSEEK_MAX_CHARS`) и число анализируемых ключей (`DEEPSEEK_MAX_KEYWORDS`).
+4. Для контроля остатка средств можно включить ежедневную проверку `GET /user/balance`:
+   - `DEEPSEEK_BALANCE_CHECK_ENABLED=1` включает автопроверку
+   - `DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS=86400` задаёт интервал проверки
+   - `DEEPSEEK_BALANCE_LOW_THRESHOLD=5` задаёт порог предупреждения по `total_balance`
+
+При включённой интеграции бот добавляет команду `/balance` и кнопку `Баланс AI`. Автоматическое напоминание о низком или исчерпанном балансе отправляется не чаще одного раза в сутки в авторизованные чаты.
 
 Если DeepSeek недоступен, бот автоматически возвращается к точному поиску по ключевым словам. В интерфейсе добавления ключей бот показывает рекомендации по формулировке запросов для модели.

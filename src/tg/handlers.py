@@ -8,16 +8,17 @@ from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import hashlib
 from aiogram.filters import StateFilter
 
-from ..config import ProviderConfig, AppConfig
+from ..config import ProviderConfig, AppConfig, DeepSeekConfig
 from ..db.repo import Repository, AppPreferences
 from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
+from ..monitor.deepseek_balance import DeepSeekBalanceService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
 
@@ -45,11 +46,22 @@ def create_router(
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
+    deepseek_balance_service: DeepSeekBalanceService | None,
     provider_config: ProviderConfig,
+    deepseek_config: DeepSeekConfig,
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
 ) -> Router:
     router = Router()
+
+    balance_available = bool(deepseek_balance_service and deepseek_config.enabled and deepseek_config.api_key)
+
+    def main_kb(enabled: bool, *, is_admin: bool) -> ReplyKeyboardMarkup:
+        return main_menu_keyboard(
+            enabled,
+            admin=is_admin,
+            deepseek_balance_available=balance_available,
+        )
 
     # Secret admin section: view authorized users
     @router.message(Command("auth"))
@@ -126,35 +138,34 @@ def create_router(
                 • /help — список команд
                 """
             ).strip(),
-            reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin),
+            reply_markup=main_kb(prefs.enabled, is_admin=is_admin),
         )
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
 
     @router.message(Command("help"))
     async def command_help(message: Message) -> None:
-        await message.answer(
-            dedent(
-                """
-                Быстрый старт:
-                1) «Настройки» → «Ключевые слова» — пришли список (по одному на строку)
-                2) «Интервал»/«Страницы» — при необходимости
-                3) «Назад» → «Включить»
-                
-                Команды:
-                /settings — открыть настройки
-                /set_keywords — задать ключевые слова сообщением
-                /keywords — управление по одному (добавление/удаление)
-                /set_interval <интервал> — например: 5m, 1h, 30s
-                /set_pages <число> — количество страниц для проверки
-                /enable — включить мониторинг
-                /disable — выключить мониторинг
-                /status — показать статус
-                /test — тестовое уведомление
-                /cancel — отменить текущий ввод
-                """
-            ).strip()
-        )
+        help_lines = [
+            "Быстрый старт:",
+            "1) «Настройки» → «Ключевые слова» — пришли список (по одному на строку)",
+            "2) «Интервал»/«Страницы» — при необходимости",
+            "3) «Назад» → «Включить»",
+            "",
+            "Команды:",
+            "/settings — открыть настройки",
+            "/set_keywords — задать ключевые слова сообщением",
+            "/keywords — управление по одному (добавление/удаление)",
+            "/set_interval <интервал> — например: 5m, 1h, 30s",
+            "/set_pages <число> — количество страниц для проверки",
+            "/enable — включить мониторинг",
+            "/disable — выключить мониторинг",
+            "/status — показать статус",
+            "/test — тестовое уведомление",
+            "/cancel — отменить текущий ввод",
+        ]
+        if balance_available:
+            help_lines.insert(-2, "/balance — показать текущий баланс DeepSeek")
+        await message.answer("\n".join(help_lines))
 
     @router.message(Command("login"))
     async def command_login(message: Message, state: FSMContext, command: CommandObject) -> None:
@@ -222,7 +233,7 @@ def create_router(
             return
         text = await _format_status(repo, prefs, provider_config)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
+        await message.answer(text, reply_markup=main_kb(prefs.enabled, is_admin=is_admin))
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
@@ -246,7 +257,7 @@ def create_router(
     async def ru_back(message: Message) -> None:
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Главное меню", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Очистка детекций: подтверждение через inline-кнопки
     @router.message(F.text.casefold() == "очистить детекции")
@@ -286,7 +297,7 @@ def create_router(
         await state.clear()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Операция отменена", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     @router.message(Command("set_keywords"))
     async def command_set_keywords(message: Message, state: FSMContext) -> None:
@@ -332,14 +343,14 @@ def create_router(
         await state.clear()
         prefs2 = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Ключевые слова обновлены", reply_markup=main_menu_keyboard(prefs2.enabled if prefs2 else False, admin=is_admin))
+        await message.answer("Ключевые слова обновлены", reply_markup=main_kb(prefs2.enabled if prefs2 else False, is_admin=is_admin))
 
     @router.callback_query(F.data == "cancel_keywords")
     async def cancel_keywords_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         prefs = await repo.get_preferences()
         is_admin = bool(callback.from_user and callback.from_user.id == ADMIN_USER_ID)
-        await callback.message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await callback.message.answer("Операция отменена", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
         await callback.answer()
 
     @router.message(F.text.casefold() == "ключевые слова")
@@ -565,7 +576,7 @@ def create_router(
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Обработчик /cancel ниже оставлен для совместимости (глобальный выше перехватит)
 
@@ -603,7 +614,7 @@ def create_router(
         await repo.set_pages(pages)
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Кнопка: Страницы (запрос значения)
     @router.message(F.text.casefold() == "страницы")
@@ -636,7 +647,7 @@ def create_router(
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Мониторинг включён", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Мониторинг включён", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     @router.message(F.text.casefold() == "включить")
     async def ru_enable(message: Message) -> None:
@@ -649,7 +660,27 @@ def create_router(
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Мониторинг выключен", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Мониторинг выключен", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
+
+    @router.message(Command("balance"))
+    async def command_balance(message: Message) -> None:
+        if not deepseek_balance_service:
+            await message.answer("DeepSeek не настроен: отсутствует API ключ.")
+            return
+        if not deepseek_config.enabled:
+            await message.answer("Интеграция DeepSeek отключена в конфигурации.")
+            return
+        try:
+            report = await deepseek_balance_service.get_report()
+        except Exception:
+            LOGGER.exception("Failed to fetch DeepSeek balance on demand")
+            await message.answer("Не удалось получить баланс DeepSeek. Проверьте API ключ и доступность сервиса.")
+            return
+        await message.answer(deepseek_balance_service.format_status_message(report))
+
+    @router.message(F.text.casefold() == "баланс ai")
+    async def ru_balance(message: Message) -> None:
+        await command_balance(message)
 
     @router.message(F.text.casefold() == "выключить")
     async def ru_disable(message: Message) -> None:

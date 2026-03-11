@@ -11,6 +11,8 @@ from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
 from .monitor.semantic import DeepSeekSemanticAnalyzer
 from .monitor.detail_scheduler import DetailScanScheduler
+from .monitor.deepseek_balance import DeepSeekBalanceClient, DeepSeekBalanceService
+from .monitor.deepseek_balance_scheduler import DeepSeekBalanceScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
@@ -37,6 +39,19 @@ class Container:
             self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
         else:
             self.semantic_matcher = None
+        if config.deepseek.enabled and config.deepseek.api_key:
+            self.deepseek_balance_client = DeepSeekBalanceClient(config.deepseek)
+            self.deepseek_balance_service = DeepSeekBalanceService(
+                client=self.deepseek_balance_client,
+                repository=self.repository,
+                bot=self.bot,
+                auth_state=self.auth_state,
+                deepseek_config=config.deepseek,
+                logging_config=config.logging,
+            )
+        else:
+            self.deepseek_balance_client = None
+            self.deepseek_balance_service = None
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
@@ -64,6 +79,11 @@ class Container:
             provider_config=config.provider,
             logging_config=config.logging,
         )
+        self.deepseek_balance_scheduler = DeepSeekBalanceScheduler(
+            service=self.deepseek_balance_service,
+            deepseek_config=config.deepseek,
+            logging_config=config.logging,
+        )
 
     def _create_provider(self) -> SourceProvider:
         if self.config.provider.use_playwright:
@@ -80,5 +100,7 @@ class Container:
         finally:
             if self.semantic_matcher is not None:
                 await self.semantic_matcher.close()
+            if self.deepseek_balance_client is not None:
+                await self.deepseek_balance_client.close()
             await self.engine.dispose()
             await self.bot.session.close()

@@ -3,12 +3,19 @@ from __future__ import annotations
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 
-def main_menu_keyboard(enabled: bool = False, *, admin: bool = False) -> ReplyKeyboardMarkup:
+def main_menu_keyboard(
+    enabled: bool = False,
+    *,
+    admin: bool = False,
+    deepseek_balance_available: bool = False,
+) -> ReplyKeyboardMarkup:
     toggle_text = "Выключить" if enabled else "Включить"
     rows = [
         [KeyboardButton(text="Настройки"), KeyboardButton(text="Статус")],
         [KeyboardButton(text=toggle_text), KeyboardButton(text="Помощь")],
     ]
+    if deepseek_balance_available:
+        rows.append([KeyboardButton(text="Баланс AI")])
     if admin:
         rows.append([KeyboardButton(text="Тест всем")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
