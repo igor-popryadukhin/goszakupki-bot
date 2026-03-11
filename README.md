@@ -29,7 +29,7 @@
    DETAIL_BACKOFF_BASE_SECONDS=60
    DETAIL_BACKOFF_FACTOR=2.0
    DETAIL_BACKOFF_MAX_SECONDS=3600
-   OLLAMA_HOST=http://127.0.0.1
+   OLLAMA_HOST=http://host.docker.internal
    OLLAMA_PORT=11434
    OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
    OLLAMA_TIMEOUT_SECONDS=30
@@ -169,5 +169,7 @@
 1. Поднимите локальный Ollama.
 2. Укажите `OLLAMA_HOST`, `OLLAMA_PORT` и `OLLAMA_EMBEDDING_MODEL`.
 3. При необходимости настройте пороги `ANALYSIS_SEMANTIC_THRESHOLD`, `ANALYSIS_SEMANTIC_REVIEW_THRESHOLD` и версию пайплайна `ANALYSIS_VERSION`.
+
+Если бот работает в Docker, а Ollama запущен на хостовой машине, используйте `OLLAMA_HOST=http://host.docker.internal`. Значение `127.0.0.1` внутри контейнера указывает на сам контейнер, а не на хост.
 
 Если Ollama недоступен, semantic stage не сможет дать результат, но rules-based слой продолжит работать для прямых совпадений.
