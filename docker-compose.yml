@@ -1,9 +1,25 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: purchases-ollama
+    ports:
+      - "${OLLAMA_PUBLISH_PORT:-11434}:11434"
+    volumes:
+      - ./ollama:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   purchases-bot:
     build: .
     container_name: purchases-bot
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      ollama:
+        condition: service_healthy
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       SOURCE_IDS: ${SOURCE_IDS:-goszakupki.by,icetrade.by}
@@ -32,7 +48,7 @@ services:
       AUTH_LOGIN: ${AUTH_LOGIN}
       AUTH_PASSWORD: ${AUTH_PASSWORD}
 
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama}
       OLLAMA_PORT: ${OLLAMA_PORT:-11434}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:4b}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-30}

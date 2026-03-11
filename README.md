@@ -29,7 +29,7 @@
    DETAIL_BACKOFF_BASE_SECONDS=60
    DETAIL_BACKOFF_FACTOR=2.0
    DETAIL_BACKOFF_MAX_SECONDS=3600
-   OLLAMA_HOST=http://host.docker.internal
+   OLLAMA_HOST=http://ollama
    OLLAMA_PORT=11434
    OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
    OLLAMA_TIMEOUT_SECONDS=30
@@ -121,13 +121,19 @@
    docker compose up -d
    ```
 
-3. Логи работы:
+3. Скачайте embedding-модель внутрь контейнера Ollama:
+
+   ```bash
+   docker compose exec ollama ollama pull qwen3-embedding:4b
+   ```
+
+4. Логи работы:
 
    ```bash
    docker logs -f purchases-bot
    ```
 
-4. Остановить и удалить контейнер:
+5. Остановить и удалить контейнер:
 
    ```bash
    docker compose down
@@ -166,10 +172,9 @@
 
 Чтобы активировать режим:
 
-1. Поднимите локальный Ollama.
-2. Укажите `OLLAMA_HOST`, `OLLAMA_PORT` и `OLLAMA_EMBEDDING_MODEL`.
-3. При необходимости настройте пороги `ANALYSIS_SEMANTIC_THRESHOLD`, `ANALYSIS_SEMANTIC_REVIEW_THRESHOLD` и версию пайплайна `ANALYSIS_VERSION`.
-
-Если бот работает в Docker, а Ollama запущен на хостовой машине, используйте `OLLAMA_HOST=http://host.docker.internal`. Значение `127.0.0.1` внутри контейнера указывает на сам контейнер, а не на хост.
+1. Поднимите сервис `ollama` через `docker compose up -d`.
+2. Скачайте нужную модель командой `docker compose exec ollama ollama pull <имя_модели>`.
+3. Укажите `OLLAMA_HOST`, `OLLAMA_PORT` и `OLLAMA_EMBEDDING_MODEL`, если хотите переопределить дефолты.
+4. При необходимости настройте пороги `ANALYSIS_SEMANTIC_THRESHOLD`, `ANALYSIS_SEMANTIC_REVIEW_THRESHOLD` и версию пайплайна `ANALYSIS_VERSION`.
 
 Если Ollama недоступен, semantic stage не сможет дать результат, но rules-based слой продолжит работать для прямых совпадений.
