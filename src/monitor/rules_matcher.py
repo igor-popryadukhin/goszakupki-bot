@@ -1,7 +1,30 @@
 from __future__ import annotations
 
+import re
+
 from .analysis_types import AnalysisResult, KeywordMatch
 from .keyword_registry import KeywordEntryView
+
+_TOKEN_RE = re.compile(r"[a-zA-Zа-яА-Я0-9]+")
+_GENERIC_TOKENS = {
+    "приобретение",
+    "товаров",
+    "товара",
+    "товары",
+    "закупка",
+    "закупки",
+    "услуги",
+    "услуг",
+    "работы",
+    "работ",
+    "поставка",
+    "поставки",
+    "покупка",
+    "заявка",
+    "заявки",
+    "источника",
+    "одноисточника",
+}
 
 
 class RulesMatcher:
@@ -29,6 +52,8 @@ class RulesMatcher:
             alias_hit = next((alias for alias in entry.aliases if alias and alias in normalized), None)
             if alias_hit is None:
                 continue
+            if _is_generic_phrase(alias_hit):
+                continue
             matches.append(
                 KeywordMatch(
                     keyword_id=entry.id,
@@ -55,3 +80,11 @@ class RulesMatcher:
             status="completed",
             analysis_version=analysis_version,
         )
+
+
+def _is_generic_phrase(text: str) -> bool:
+    tokens = [token.lower() for token in _TOKEN_RE.findall(text) if len(token) >= 4]
+    if not tokens:
+        return True
+    informative_tokens = [token for token in tokens if token not in _GENERIC_TOKENS]
+    return not informative_tokens

@@ -7,6 +7,18 @@ from bs4 import BeautifulSoup
 
 _SPACE_RE = re.compile(r"\s+")
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_BOILERPLATE_PATTERNS = (
+    re.compile(r"toggle navigation", re.IGNORECASE),
+    re.compile(r"электронная торговая площадка", re.IGNORECASE),
+    re.compile(r"просмотр заявки на покупку", re.IGNORECASE),
+    re.compile(r"закупки из одного источника", re.IGNORECASE),
+    re.compile(r"\bглавная\b", re.IGNORECASE),
+    re.compile(r"\bновости\b", re.IGNORECASE),
+    re.compile(r"\bпомощь\b", re.IGNORECASE),
+    re.compile(r"\bдокументы\b", re.IGNORECASE),
+    re.compile(r"проверка браузера", re.IGNORECASE),
+    re.compile(r"\bинструкции\b", re.IGNORECASE),
+)
 
 
 @dataclass(slots=True)
@@ -46,6 +58,8 @@ class TextNormalizer:
         for tag in soup.find_all(["script", "style", "noscript", "template"]):
             tag.decompose()
         normalized = soup.get_text(" ", strip=True)
+        for pattern in _BOILERPLATE_PATTERNS:
+            normalized = pattern.sub(" ", normalized)
         normalized = normalized.lower()
         normalized = _SPACE_RE.sub(" ", normalized)
         return normalized.strip()

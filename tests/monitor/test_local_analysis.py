@@ -65,6 +65,25 @@ def test_text_normalizer_removes_html_and_normalizes_spaces() -> None:
     assert result.full_text == "ремонт тормозов поставка деталей и ремонт"
 
 
+def test_text_normalizer_removes_known_page_boilerplate() -> None:
+    normalizer = TextNormalizer()
+
+    result = normalizer.normalize(
+        TenderTextPayload(
+            title="Зонды газозаборные",
+            raw_detail_text=(
+                "Просмотр заявки на покупку Закупки из одного источника "
+                "Toggle navigation Электронная торговая площадка Главная Новости "
+                "Документы Зонды газозаборные к газоанализаторам"
+            ),
+        )
+    )
+
+    assert "toggle navigation" not in result.full_text
+    assert "электронная торговая площадка" not in result.full_text
+    assert "зонды газозаборные" in result.full_text
+
+
 def test_rules_matcher_returns_lexical_match() -> None:
     matcher = RulesMatcher()
     entries = [KeywordEntryView(id=1, source_phrase="ремонт тормозов", normalized_phrase="ремонт тормозов")]
@@ -75,6 +94,15 @@ def test_rules_matcher_returns_lexical_match() -> None:
     assert result.is_relevant is True
     assert result.decision_source == "rules"
     assert result.matches[0].match_type == "lexical"
+
+
+def test_rules_matcher_ignores_generic_procurement_phrase() -> None:
+    matcher = RulesMatcher()
+    entries = [KeywordEntryView(id=1, source_phrase="Приобретение товаров", normalized_phrase="приобретение товаров")]
+
+    result = matcher.match("закупка оформлена как приобретение товаров для учреждения", entries, analysis_version=3)
+
+    assert result is None
 
 
 def test_semantic_matcher_uses_embedding_similarity() -> None:

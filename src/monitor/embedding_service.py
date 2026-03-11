@@ -38,7 +38,7 @@ class EmbeddingService:
             return cached.vector
 
         session = await self._ensure_session()
-        payload = {"model": self._config.embedding_model, "prompt": normalized}
+        payload = {"model": self._config.embedding_model, "input": normalized}
         async with self._semaphore:
             async with session.post(self._config.embeddings_api_url, json=payload) as response:
                 if response.status != 200:
@@ -65,6 +65,10 @@ class EmbeddingService:
     @staticmethod
     def _extract_vector(data: dict[str, Any]) -> list[float]:
         raw_vector = data.get("embedding")
+        if raw_vector is None:
+            embeddings = data.get("embeddings")
+            if isinstance(embeddings, list) and embeddings:
+                raw_vector = embeddings[0]
         if not isinstance(raw_vector, list):
             LOGGER.warning("Ollama embedding payload missing vector", extra={"payload": data})
             return []
