@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 
@@ -23,8 +24,8 @@ def _get_int(name: str, default: int) -> int:
         return default
     try:
         return int(value)
-    except ValueError:
-        raise ValueError(f"Invalid integer for {name}: {value}")
+    except ValueError as exc:
+        raise ValueError(f"Invalid integer for {name}: {value}") from exc
 
 
 def _get_float(name: str, default: float) -> float:
@@ -33,8 +34,21 @@ def _get_float(name: str, default: float) -> float:
         return default
     try:
         return float(value)
-    except ValueError:
-        raise ValueError(f"Invalid float for {name}: {value}")
+    except ValueError as exc:
+        raise ValueError(f"Invalid float for {name}: {value}") from exc
+
+
+def _get_json_object(name: str) -> dict[str, Any]:
+    value = os.getenv(name)
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for {name}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return parsed
 
 
 @dataclass(slots=True)
@@ -62,11 +76,8 @@ class HttpSelectorsConfig:
 
 @dataclass(slots=True)
 class HttpDetailSelectorsConfig:
-    # Основной контейнер подробной страницы (CSS). Если пусто — используем fallback‑список в провайдере
     main: Optional[str] = None
-    # Селекторы для текстовых блоков внутри main; если заданы, собираем текст только из них и объединяем
     text_selectors: list[str] = field(default_factory=list)
-    # Селекторы элементов, которые нужно удалить перед извлечением текста (например, меню, кнопки)
     exclude: list[str] = field(default_factory=list)
 
 
@@ -83,7 +94,7 @@ class ProviderConfig:
     selectors: HttpSelectorsConfig
     detail_selectors: HttpDetailSelectorsConfig = field(default_factory=HttpDetailSelectorsConfig)
     prefer_table: bool = False
-    # Секция детального сканирования
+
     @dataclass(slots=True)
     class DetailScanConfig:
         interval_seconds: int = 60
@@ -98,26 +109,26 @@ class ProviderConfig:
 
 
 @dataclass(slots=True)
-class DeepSeekConfig:
-    api_key: Optional[str] = None
-    base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"
-    enabled: bool = False
-    timeout_seconds: float = 30.0
-    min_score: float = 0.6
-    max_chars: int = 6000
-    max_keywords: int = 25
-    balance_check_enabled: bool = False
-    balance_check_interval_seconds: int = 86400
-    balance_low_threshold: float = 5.0
+class OllamaConfig:
+    enabled: bool = True
+    base_url: str = "http://127.0.0.1:11434"
+    chat_model: str = "bjoernb/gemma3n-e2b"
+    embedding_model: str = "nomic-embed-text"
+    timeout_seconds: float = 60.0
+    max_chars: int = 8000
+    top_k_candidates: int = 5
+    confidence_threshold: float = 0.72
+    llm_trigger_margin: float = 0.08
+    keyword_semantic_threshold: float = 0.40
+    request_options: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def api_url(self) -> str:
-        return f"{self.base_url.rstrip('/')}/chat/completions"
+    def chat_api_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/api/chat"
 
     @property
-    def balance_api_url(self) -> str:
-        return f"{self.base_url.rstrip('/')}/user/balance"
+    def embed_api_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/api/embed"
 
 
 @dataclass(slots=True)
@@ -131,7 +142,7 @@ class AppConfig:
     telegram: TelegramConfig
     database: DatabaseConfig
     provider: ProviderConfig
-    deepseek: DeepSeekConfig
+    ollama: OllamaConfig
     logging: LoggingConfig
 
     @dataclass(slots=True)
@@ -162,7 +173,6 @@ def load_config() -> AppConfig:
         id_from_href=_get_bool("GZ_ID_FROM_HREF", False),
     )
 
-    # Детальные селекторы
     def _split_csv(name: str) -> list[str]:
         raw = os.getenv(name)
         if not raw:
@@ -175,7 +185,6 @@ def load_config() -> AppConfig:
         exclude=_split_csv("GZ_DETAIL_EXCLUDE"),
     )
 
-    # Детскан: интервал берём из нового ENV, либо из старого (для обратной совместимости)
     detail_interval = _get_int("DETAIL_INTERVAL_SECONDS", _get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60))
     detail_max_retries = _get_int("DETAIL_MAX_RETRIES", 5)
     detail_backoff_base = _get_int("DETAIL_BACKOFF_BASE_SECONDS", 60)
@@ -205,29 +214,25 @@ def load_config() -> AppConfig:
         prefer_table=_get_bool("GZ_PREFER_TABLE", True),
     )
 
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY") or None
-    deepseek_enabled = _get_bool("DEEPSEEK_ENABLED", bool(deepseek_api_key))
-    if not deepseek_api_key:
-        deepseek_enabled = False
-    deepseek_config = DeepSeekConfig(
-        api_key=deepseek_api_key,
-        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-        enabled=deepseek_enabled,
-        timeout_seconds=_get_float("DEEPSEEK_TIMEOUT_SECONDS", 30.0),
-        min_score=_get_float("DEEPSEEK_MIN_SCORE", 0.6),
-        max_chars=_get_int("DEEPSEEK_MAX_CHARS", 6000),
-        max_keywords=_get_int("DEEPSEEK_MAX_KEYWORDS", 25),
-        balance_check_enabled=_get_bool("DEEPSEEK_BALANCE_CHECK_ENABLED", deepseek_enabled),
-        balance_check_interval_seconds=_get_int("DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS", 86400),
-        balance_low_threshold=_get_float("DEEPSEEK_BALANCE_LOW_THRESHOLD", 5.0),
+    ollama_config = OllamaConfig(
+        enabled=_get_bool("OLLAMA_ENABLED", True),
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        chat_model=os.getenv("OLLAMA_CHAT_MODEL", "bjoernb/gemma3n-e2b"),
+        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+        timeout_seconds=_get_float("OLLAMA_TIMEOUT_SECONDS", 60.0),
+        max_chars=_get_int("OLLAMA_MAX_CHARS", 8000),
+        top_k_candidates=_get_int("OLLAMA_TOP_K_CANDIDATES", 5),
+        confidence_threshold=_get_float("OLLAMA_CONFIDENCE_THRESHOLD", 0.72),
+        llm_trigger_margin=_get_float("OLLAMA_LLM_TRIGGER_MARGIN", 0.08),
+        keyword_semantic_threshold=_get_float("OLLAMA_KEYWORD_SEMANTIC_THRESHOLD", 0.40),
+        request_options=_get_json_object("OLLAMA_REQUEST_OPTIONS_JSON"),
     )
 
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
         provider=provider_config,
-        deepseek=deepseek_config,
+        ollama=ollama_config,
         logging=LoggingConfig(),
         auth=AppConfig.AuthConfig(
             login=os.getenv("AUTH_LOGIN") or None,

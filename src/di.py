@@ -7,17 +7,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .config import AppConfig
 from .db.repo import Repository, init_db
-from .monitor.scheduler import MonitorScheduler
-from .monitor.detail_service import DetailScanService
-from .monitor.semantic import DeepSeekSemanticAnalyzer
+from .monitor.classification import ProcurementClassifier
 from .monitor.detail_scheduler import DetailScanScheduler
-from .monitor.deepseek_balance import DeepSeekBalanceClient, DeepSeekBalanceService
-from .monitor.deepseek_balance_scheduler import DeepSeekBalanceScheduler
+from .monitor.detail_service import DetailScanService
+from .monitor.ollama_client import OllamaClient
+from .monitor.scheduler import MonitorScheduler
 from .monitor.service import MonitorService
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
-from .tg.bot import create_bot, create_dispatcher
 from .tg.auth_state import AuthState
+from .tg.bot import create_bot, create_dispatcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,26 +31,12 @@ class Container:
         self.dispatcher: Dispatcher = create_dispatcher()
         self.provider: SourceProvider = self._create_provider()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
-        if config.deepseek.enabled and config.deepseek.api_key:
-            LOGGER.info(
-                "DeepSeek semantic analysis enabled", extra={"model": config.deepseek.model}
-            )
-            self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
-        else:
-            self.semantic_matcher = None
-        if config.deepseek.enabled and config.deepseek.api_key:
-            self.deepseek_balance_client = DeepSeekBalanceClient(config.deepseek)
-            self.deepseek_balance_service = DeepSeekBalanceService(
-                client=self.deepseek_balance_client,
-                repository=self.repository,
-                bot=self.bot,
-                auth_state=self.auth_state,
-                deepseek_config=config.deepseek,
-                logging_config=config.logging,
-            )
-        else:
-            self.deepseek_balance_client = None
-            self.deepseek_balance_service = None
+        self.ollama_client = OllamaClient(config.ollama)
+        self.classifier = ProcurementClassifier(
+            repository=self.repository,
+            ollama_client=self.ollama_client,
+            config=config.ollama,
+        )
         self.monitor_service = MonitorService(
             provider=self.provider,
             repository=self.repository,
@@ -71,17 +56,12 @@ class Container:
             bot=self.bot,
             provider_config=config.provider,
             auth_state=self.auth_state,
-            semantic_matcher=self.semantic_matcher,
+            classifier=self.classifier,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
             repository=self.repository,
             provider_config=config.provider,
-            logging_config=config.logging,
-        )
-        self.deepseek_balance_scheduler = DeepSeekBalanceScheduler(
-            service=self.deepseek_balance_service,
-            deepseek_config=config.deepseek,
             logging_config=config.logging,
         )
 
@@ -92,15 +72,15 @@ class Container:
 
     async def init_database(self) -> None:
         await init_db(self.engine)
+        created = await self.repository.seed_default_topics()
+        if created:
+            LOGGER.info("Seeded default topic catalog", extra={"created": created})
 
     async def shutdown(self) -> None:
         try:
             if hasattr(self.provider, "shutdown"):
                 await getattr(self.provider, "shutdown")()
         finally:
-            if self.semantic_matcher is not None:
-                await self.semantic_matcher.close()
-            if self.deepseek_balance_client is not None:
-                await self.deepseek_balance_client.close()
+            await self.classifier.close()
             await self.engine.dispose()
             await self.bot.session.close()

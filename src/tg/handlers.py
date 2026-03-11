@@ -12,13 +12,12 @@ from aiogram.types import Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, Inl
 import hashlib
 from aiogram.filters import StateFilter
 
-from ..config import ProviderConfig, AppConfig, DeepSeekConfig
+from ..config import ProviderConfig, AppConfig, OllamaConfig
 from ..db.repo import Repository, AppPreferences
 from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
-from ..monitor.deepseek_balance import DeepSeekBalanceService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
 
@@ -46,22 +45,15 @@ def create_router(
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
-    deepseek_balance_service: DeepSeekBalanceService | None,
     provider_config: ProviderConfig,
-    deepseek_config: DeepSeekConfig,
+    ollama_config: OllamaConfig,
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
 ) -> Router:
     router = Router()
 
-    balance_available = bool(deepseek_balance_service and deepseek_config.enabled and deepseek_config.api_key)
-
     def main_kb(enabled: bool, *, is_admin: bool) -> ReplyKeyboardMarkup:
-        return main_menu_keyboard(
-            enabled,
-            admin=is_admin,
-            deepseek_balance_available=balance_available,
-        )
+        return main_menu_keyboard(enabled, admin=is_admin)
 
     # Secret admin section: view authorized users
     @router.message(Command("auth"))
@@ -163,8 +155,7 @@ def create_router(
             "/test — тестовое уведомление",
             "/cancel — отменить текущий ввод",
         ]
-        if balance_available:
-            help_lines.insert(-2, "/balance — показать текущий баланс DeepSeek")
+        help_lines.insert(-2, "/analysis_last <id> — показать последнюю классификацию по id детекции")
         await message.answer("\n".join(help_lines))
 
     @router.message(Command("login"))
@@ -231,7 +222,7 @@ def create_router(
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        text = await _format_status(repo, prefs, provider_config)
+        text = await _format_status(repo, prefs, provider_config, ollama_config)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(text, reply_markup=main_kb(prefs.enabled, is_admin=is_admin))
 
@@ -379,7 +370,7 @@ def create_router(
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="kw_cancel_add")]])
         await callback.message.answer(
             "Введите ключевое слово для добавления:\n\n"
-            "Советы для семантического поиска DeepSeek:\n"
+            "Советы для локального семантического поиска:\n"
             "• Формулируйте короткие описательные фразы (до 3–5 слов).\n"
             "• Добавляйте важные параметры: предмет закупки, материалы, регион, объём.\n"
             "• Избегайте длинных предложений и объединяйте разные идеи отдельными ключами.",
@@ -662,25 +653,34 @@ def create_router(
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer("Мониторинг выключен", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
-    @router.message(Command("balance"))
-    async def command_balance(message: Message) -> None:
-        if not deepseek_balance_service:
-            await message.answer("DeepSeek не настроен: отсутствует API ключ.")
-            return
-        if not deepseek_config.enabled:
-            await message.answer("Интеграция DeepSeek отключена в конфигурации.")
+    @router.message(Command("analysis_last"))
+    async def command_analysis_last(message: Message, command: CommandObject) -> None:
+        if not command.args:
+            await message.answer("Укажи id детекции, например: /analysis_last 42")
             return
         try:
-            report = await deepseek_balance_service.get_report()
-        except Exception:
-            LOGGER.exception("Failed to fetch DeepSeek balance on demand")
-            await message.answer("Не удалось получить баланс DeepSeek. Проверьте API ключ и доступность сервиса.")
+            detection_id = int(command.args.strip())
+        except ValueError:
+            await message.answer("id детекции должен быть целым числом")
             return
-        await message.answer(deepseek_balance_service.format_status_message(report))
-
-    @router.message(F.text.casefold() == "баланс ai")
-    async def ru_balance(message: Message) -> None:
-        await command_balance(message)
+        snapshot = await repo.get_latest_classification(detection_id)
+        if not snapshot:
+            await message.answer("Классификация для этой детекции не найдена")
+            return
+        lines = [
+            f"Детекция: {snapshot.detection_id}",
+            f"Тема: {snapshot.topic_code or '-'}",
+            f"Подтема: {snapshot.subtopic_code or '-'}",
+            f"Уверенность: {snapshot.confidence:.2f}" if snapshot.confidence is not None else "Уверенность: -",
+            f"Источник решения: {snapshot.decision_source or '-'}",
+            f"Суть: {snapshot.summary or '-'}",
+            f"Обоснование: {snapshot.reasoning or '-'}",
+            f"Ключевые слова: {', '.join(snapshot.keyword_matches) if snapshot.keyword_matches else '-'}",
+            f"Признаки: {', '.join(snapshot.matched_features) if snapshot.matched_features else '-'}",
+        ]
+        if snapshot.classification_error:
+            lines.append(f"Ошибка: {snapshot.classification_error}")
+        await message.answer("\n".join(lines))
 
     @router.message(F.text.casefold() == "выключить")
     async def ru_disable(message: Message) -> None:
@@ -747,13 +747,20 @@ def _format_preferences(prefs: AppPreferences) -> str:
     return "\n".join(lines)
 
 
-async def _format_status(repo: Repository, prefs: AppPreferences, provider_config: ProviderConfig) -> str:
+async def _format_status(
+    repo: Repository,
+    prefs: AppPreferences,
+    provider_config: ProviderConfig,
+    ollama_config: OllamaConfig,
+) -> str:
     status = "включён" if prefs.enabled else "выключен"
     # Сегодня с полуночи по UTC (упрощённо)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
     # Счётчики
     det_total = await repo.count_detections(source_id=provider_config.source_id)
     det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
+    classified_total = await repo.count_classified_detections(source_id=provider_config.source_id)
+    classified_today = await repo.count_classified_detections(source_id=provider_config.source_id, since=today_start)
     pending_detail = await repo.count_pending_detail()
     notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
     notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
@@ -770,9 +777,11 @@ async def _format_status(repo: Repository, prefs: AppPreferences, provider_confi
         f"Интервал опроса: {prefs.interval_seconds} сек.",
         f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
         f"Страниц для проверки: {prefs.pages}",
+        f"Локальная AI-классификация: {'включена' if ollama_config.enabled else 'выключена'}",
         "",
         "Данные:",
         f"• Детекции: всего {det_total}, сегодня {det_today}",
+        f"• Классифицировано: всего {classified_total}, сегодня {classified_today}",
         f"• Очередь детсканера: {pending_detail}",
         f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
     ]
