@@ -2,8 +2,6 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: purchases-ollama
-    ports:
-      - "${OLLAMA_PUBLISH_PORT:-11434}:11434"
     volumes:
       - ./ollama:/root/.ollama
     restart: unless-stopped
