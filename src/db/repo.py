@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy import and_
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from .models import (
+    AnalysisMatch,
     AppSettings,
     AuthSession,
     AuthorizedChat,
     AuthorizedUser,
     Base,
     Detection,
+    EmbeddingCache,
+    KeywordEmbedding,
+    KeywordEntry,
     Notification,
 )
 
@@ -35,6 +40,34 @@ class AppPreferences:
     interval_seconds: int
     pages: int
     enabled: bool
+    keyword_version: int
+
+
+@dataclass(slots=True)
+class KeywordRecord:
+    id: int
+    source_phrase: str
+    normalized_phrase: str
+    synonyms: list[str]
+    negative_contexts: list[str]
+    weight: float
+    version: int
+
+
+@dataclass(slots=True)
+class EmbeddingRecord:
+    id: int
+    cache_key: str
+    model: str
+    text_hash: str
+    vector: list[float]
+
+
+@dataclass(slots=True)
+class KeywordEmbeddingRecord:
+    keyword_id: int
+    model: str
+    vector: list[float]
 
 
 class Repository:
@@ -50,6 +83,7 @@ class Repository:
                     interval_seconds=default_interval,
                     pages=default_pages,
                     enabled=False,
+                    keyword_version=1,
                 )
                 session.add(settings)
                 await _commit(session)
@@ -58,15 +92,19 @@ class Repository:
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
+                keyword_version=getattr(settings, "keyword_version", 1) or 1,
             )
 
     async def update_keywords(self, keywords: Iterable[str]) -> None:
-        normalized = "\n".join(k.strip() for k in keywords if k.strip())
+        items = [k.strip() for k in keywords if k.strip()]
+        normalized = "\n".join(items)
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.keywords = normalized
+            settings.keyword_version = (getattr(settings, "keyword_version", 1) or 1) + 1
+            await self._replace_keyword_entries(session, items, settings.keyword_version)
             await _commit(session)
 
     async def add_keyword(self, keyword: str) -> bool:
@@ -84,6 +122,8 @@ class Repository:
                 return False
             items.append(k)
             settings.keywords = "\n".join(items)
+            settings.keyword_version = (getattr(settings, "keyword_version", 1) or 1) + 1
+            await self._replace_keyword_entries(session, items, settings.keyword_version)
             await _commit(session)
             return True
 
@@ -101,6 +141,8 @@ class Repository:
             if len(items) == before:
                 return False
             settings.keywords = "\n".join(items)
+            settings.keyword_version = (getattr(settings, "keyword_version", 1) or 1) + 1
+            await self._replace_keyword_entries(session, items, settings.keyword_version)
             await _commit(session)
             return True
 
@@ -110,6 +152,8 @@ class Repository:
             if settings is None:
                 raise ValueError("App settings not initialized")
             settings.keywords = ""
+            settings.keyword_version = (getattr(settings, "keyword_version", 1) or 1) + 1
+            await self._replace_keyword_entries(session, [], settings.keyword_version)
             await _commit(session)
 
     async def set_interval(self, interval_seconds: int) -> None:
@@ -146,12 +190,117 @@ class Repository:
                 interval_seconds=settings.interval_seconds,
                 pages=settings.pages,
                 enabled=settings.enabled,
+                keyword_version=getattr(settings, "keyword_version", 1) or 1,
             )
 
     async def is_enabled(self) -> bool:
         async with self._session_factory() as session:
             settings = await session.scalar(select(AppSettings).limit(1))
             return bool(settings and settings.enabled)
+
+    async def sync_keyword_registry(self) -> int:
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            version = getattr(settings, "keyword_version", 1) or 1
+            await self._replace_keyword_entries(session, _split_keywords(settings.keywords), version)
+            await _commit(session)
+            return version
+
+    async def list_active_keyword_records(self) -> list[KeywordRecord]:
+        async with self._session_factory() as session:
+            stmt = (
+                select(KeywordEntry)
+                .where(KeywordEntry.is_active.is_(True))
+                .order_by(KeywordEntry.normalized_phrase.asc(), KeywordEntry.id.asc())
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+            return [
+                KeywordRecord(
+                    id=row.id,
+                    source_phrase=row.source_phrase,
+                    normalized_phrase=row.normalized_phrase,
+                    synonyms=_loads_json_list(row.synonyms_json),
+                    negative_contexts=_loads_json_list(row.negative_contexts_json),
+                    weight=row.weight,
+                    version=row.version,
+                )
+                for row in rows
+            ]
+
+    async def get_embedding_cache(self, *, cache_key: str) -> EmbeddingRecord | None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(EmbeddingCache).where(EmbeddingCache.cache_key == cache_key))
+            if row is None:
+                return None
+            return EmbeddingRecord(
+                id=row.id,
+                cache_key=row.cache_key,
+                model=row.model,
+                text_hash=row.text_hash,
+                vector=_loads_json_vector(row.vector_json),
+            )
+
+    async def upsert_embedding_cache(
+        self,
+        *,
+        cache_key: str,
+        model: str,
+        text_hash: str,
+        text_preview: str | None,
+        vector: list[float],
+    ) -> None:
+        async with self._session_factory() as session:
+            row = await session.scalar(select(EmbeddingCache).where(EmbeddingCache.cache_key == cache_key))
+            payload = json.dumps(vector)
+            if row is None:
+                row = EmbeddingCache(
+                    cache_key=cache_key,
+                    model=model,
+                    text_hash=text_hash,
+                    text_preview=text_preview,
+                    vector_json=payload,
+                )
+                session.add(row)
+            else:
+                row.model = model
+                row.text_hash = text_hash
+                row.text_preview = text_preview
+                row.vector_json = payload
+                row.updated_at = datetime.utcnow()
+            await _commit(session)
+
+    async def get_keyword_embedding(self, *, keyword_id: int, model: str) -> KeywordEmbeddingRecord | None:
+        async with self._session_factory() as session:
+            stmt = select(KeywordEmbedding).where(
+                KeywordEmbedding.keyword_id == keyword_id,
+                KeywordEmbedding.model == model,
+            )
+            row = await session.scalar(stmt)
+            if row is None:
+                return None
+            return KeywordEmbeddingRecord(
+                keyword_id=row.keyword_id,
+                model=row.model,
+                vector=_loads_json_vector(row.vector_json),
+            )
+
+    async def upsert_keyword_embedding(self, *, keyword_id: int, model: str, vector: list[float]) -> None:
+        async with self._session_factory() as session:
+            stmt = select(KeywordEmbedding).where(
+                KeywordEmbedding.keyword_id == keyword_id,
+                KeywordEmbedding.model == model,
+            )
+            row = await session.scalar(stmt)
+            payload = json.dumps(vector)
+            if row is None:
+                row = KeywordEmbedding(keyword_id=keyword_id, model=model, vector_json=payload)
+                session.add(row)
+            else:
+                row.vector_json = payload
+                row.updated_at = datetime.utcnow()
+            await _commit(session)
 
     async def record_detection(
         self,
@@ -253,6 +402,65 @@ class Repository:
             if det is None:
                 return
             det.detail_loaded = bool(success)
+            await _commit(session)
+
+    async def save_detail_content(
+        self,
+        detection_id: int,
+        *,
+        raw_text: str,
+        normalized_text: str,
+    ) -> None:
+        async with self._session_factory() as session:
+            det = await session.get(Detection, detection_id)
+            if det is None:
+                return
+            det.detail_loaded = True
+            det.detail_text_raw = raw_text
+            det.normalized_text = normalized_text
+            await _commit(session)
+
+    async def save_analysis_result(
+        self,
+        detection_id: int,
+        *,
+        status: str,
+        analysis_version: int,
+        is_relevant: bool,
+        confidence: float | None,
+        summary: str | None,
+        explanation: str | None,
+        decision_source: str | None,
+        needs_review: bool,
+        matches: list[dict[str, object]],
+    ) -> None:
+        async with self._session_factory() as session:
+            det = await session.get(Detection, detection_id)
+            if det is None:
+                return
+            det.analysis_status = status
+            det.analysis_version = analysis_version
+            det.analysis_confidence = confidence
+            det.analysis_summary = summary
+            det.analysis_explanation = explanation
+            det.analysis_decision_source = decision_source
+            det.analysis_needs_review = needs_review
+            det.analysis_completed_at = datetime.utcnow()
+            await session.execute(delete(AnalysisMatch).where(AnalysisMatch.detection_id == detection_id))
+            for index, match in enumerate(matches, start=1):
+                session.add(
+                    AnalysisMatch(
+                        detection_id=detection_id,
+                        keyword_id=_to_optional_int(match.get("keyword_id")),
+                        matched_text=str(match.get("matched_text") or ""),
+                        match_type=str(match.get("match_type") or ""),
+                        score=_to_optional_float(match.get("score")),
+                        reason=str(match.get("reason") or "") or None,
+                        rank=index,
+                    )
+                )
+            if not is_relevant and det.analysis_status == "completed":
+                det.analysis_needs_review = needs_review
             await _commit(session)
 
     async def complete_detail_scan(self, detection_id: int) -> None:
@@ -454,6 +662,27 @@ class Repository:
                 raise
             return created
 
+    async def requeue_outdated_analyses(self, *, analysis_version: int) -> int:
+        async with self._session_factory() as session:
+            stmt = (
+                update(Detection)
+                .where(
+                    or_(
+                        Detection.analysis_version < analysis_version,
+                        Detection.analysis_status.in_(("failed", "pending")),
+                    )
+                )
+                .values(
+                    detail_scan_pending=True,
+                    analysis_status="pending",
+                    analysis_needs_review=False,
+                    detail_next_retry_at=None,
+                )
+            )
+            result = await session.execute(stmt)
+            await _commit(session)
+            return int(getattr(result, "rowcount", 0) or 0)
+
     # Authorization persistence removed; handled in-memory for this session
 
     # No persistent list of authorized chats in DB
@@ -544,6 +773,47 @@ class Repository:
                 stmt = stmt.where(Notification.source_id == source_id)
             return await session.scalar(stmt)
 
+    async def _replace_keyword_entries(
+        self,
+        session: AsyncSession,
+        items: list[str],
+        version: int,
+    ) -> None:
+        rows = (await session.execute(select(KeywordEntry))).scalars().all()
+        existing = {row.normalized_phrase: row for row in rows}
+        seen: set[str] = set()
+        active_normalized: set[str] = set()
+        for raw in items:
+            normalized = _normalize_keyword_phrase(raw)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            active_normalized.add(normalized)
+            row = existing.get(normalized)
+            if row is None:
+                session.add(
+                    KeywordEntry(
+                        source_phrase=raw,
+                        normalized_phrase=normalized,
+                        synonyms_json="[]",
+                        negative_contexts_json="[]",
+                        weight=1.0,
+                        version=version,
+                        is_active=True,
+                    )
+                )
+                continue
+            row.source_phrase = raw
+            row.version = version
+            row.is_active = True
+            row.updated_at = datetime.utcnow()
+
+        for normalized, row in existing.items():
+            if normalized in active_normalized:
+                continue
+            await session.execute(delete(KeywordEmbedding).where(KeywordEmbedding.keyword_id == row.id))
+            await session.delete(row)
+
 
 def _raise_storage_full(exc: OperationalError) -> None:
     if _is_storage_full_error(exc):
@@ -607,7 +877,94 @@ def _split_keywords(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _normalize_keyword_phrase(text: str) -> str:
+    return " ".join("".join(ch.lower() if ch.isalnum() else " " for ch in text).split())
+
+
+def _loads_json_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+def _loads_json_vector(value: str | None) -> list[float]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    result: list[float] = []
+    for item in parsed:
+        try:
+            result.append(float(item))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _to_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
-        # Create tables for current models; no ad-hoc migrations
         await conn.run_sync(Base.metadata.create_all)
+        await _ensure_legacy_columns(conn)
+
+
+async def _ensure_legacy_columns(conn) -> None:
+    await _ensure_columns(
+        conn,
+        "app_settings",
+        {
+            "keyword_version": "INTEGER NOT NULL DEFAULT 1",
+        },
+    )
+    await _ensure_columns(
+        conn,
+        "detections",
+        {
+            "detail_text_raw": "TEXT",
+            "normalized_text": "TEXT",
+            "analysis_status": "VARCHAR(32) NOT NULL DEFAULT 'pending'",
+            "analysis_version": "INTEGER NOT NULL DEFAULT 0",
+            "analysis_confidence": "FLOAT",
+            "analysis_summary": "TEXT",
+            "analysis_explanation": "TEXT",
+            "analysis_decision_source": "VARCHAR(32)",
+            "analysis_needs_review": "BOOLEAN NOT NULL DEFAULT 0",
+            "analysis_completed_at": "DATETIME",
+        },
+    )
+
+
+async def _ensure_columns(conn, table_name: str, columns: dict[str, str]) -> None:
+    result = await conn.execute(text(f"PRAGMA table_info('{table_name}')"))
+    existing = {str(row[1]) for row in result.fetchall()}
+    for column_name, ddl in columns.items():
+        if column_name in existing:
+            continue
+        await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"))

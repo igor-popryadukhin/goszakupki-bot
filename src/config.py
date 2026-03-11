@@ -138,6 +138,41 @@ class DeepSeekConfig:
 
 
 @dataclass(slots=True)
+class OllamaConfig:
+    host: str = "http://127.0.0.1"
+    port: int = 11434
+    embedding_model: str = "nomic-embed-text"
+    llm_model: Optional[str] = None
+    timeout_seconds: float = 30.0
+    max_concurrency: int = 2
+
+    @property
+    def base_url(self) -> str:
+        return f"{self.host.rstrip('/')}:{self.port}"
+
+    @property
+    def embeddings_api_url(self) -> str:
+        return f"{self.base_url}/api/embeddings"
+
+    @property
+    def generate_api_url(self) -> str:
+        return f"{self.base_url}/api/generate"
+
+
+@dataclass(slots=True)
+class AnalysisConfig:
+    semantic_enabled: bool = True
+    semantic_threshold: float = 0.72
+    semantic_review_threshold: float = 0.6
+    semantic_top_n: int = 5
+    embedding_cache_enabled: bool = True
+    analysis_version: int = 1
+    analysis_queue_limit: int = 1000
+    analysis_parallelism: int = 2
+    llm_resolver_enabled: bool = False
+
+
+@dataclass(slots=True)
 class LoggingConfig:
     level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
     timezone: str = field(default_factory=lambda: os.getenv("TZ", "UTC"))
@@ -149,6 +184,8 @@ class AppConfig:
     database: DatabaseConfig
     providers: list[ProviderConfig]
     deepseek: DeepSeekConfig
+    ollama: OllamaConfig
+    analysis: AnalysisConfig
     logging: LoggingConfig
 
     @dataclass(slots=True)
@@ -328,12 +365,33 @@ def load_config() -> AppConfig:
         balance_check_interval_seconds=_get_int("DEEPSEEK_BALANCE_CHECK_INTERVAL_SECONDS", 86400),
         balance_low_threshold=_get_float("DEEPSEEK_BALANCE_LOW_THRESHOLD", 5.0),
     )
+    ollama_config = OllamaConfig(
+        host=os.getenv("OLLAMA_HOST", "http://127.0.0.1"),
+        port=_get_int("OLLAMA_PORT", 11434),
+        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+        llm_model=os.getenv("OLLAMA_LLM_MODEL") or None,
+        timeout_seconds=_get_float("OLLAMA_TIMEOUT_SECONDS", 30.0),
+        max_concurrency=_get_int("OLLAMA_MAX_CONCURRENCY", 2),
+    )
+    analysis_config = AnalysisConfig(
+        semantic_enabled=_get_bool("ANALYSIS_SEMANTIC_ENABLED", True),
+        semantic_threshold=_get_float("ANALYSIS_SEMANTIC_THRESHOLD", 0.72),
+        semantic_review_threshold=_get_float("ANALYSIS_SEMANTIC_REVIEW_THRESHOLD", 0.6),
+        semantic_top_n=_get_int("ANALYSIS_SEMANTIC_TOP_N", 5),
+        embedding_cache_enabled=_get_bool("ANALYSIS_EMBEDDING_CACHE_ENABLED", True),
+        analysis_version=_get_int("ANALYSIS_VERSION", 1),
+        analysis_queue_limit=_get_int("ANALYSIS_QUEUE_LIMIT", 1000),
+        analysis_parallelism=_get_int("ANALYSIS_PARALLELISM", 2),
+        llm_resolver_enabled=_get_bool("ANALYSIS_LLM_RESOLVER_ENABLED", False),
+    )
 
     return AppConfig(
         telegram=TelegramConfig(token=token),
         database=DatabaseConfig(path=db_path),
         providers=providers,
         deepseek=deepseek_config,
+        ollama=ollama_config,
+        analysis=analysis_config,
         logging=LoggingConfig(),
         auth=AppConfig.AuthConfig(
             login=os.getenv("AUTH_LOGIN") or None,

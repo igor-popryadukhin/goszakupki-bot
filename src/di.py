@@ -7,14 +7,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .config import AppConfig, ProviderConfig
 from .db.repo import Repository, init_db
+from .monitor.analysis_pipeline import AnalysisPipeline
 from .monitor.scheduler import MonitorScheduler
 from .monitor.detail_service import DetailScanService
-from .monitor.semantic import DeepSeekSemanticAnalyzer
+from .monitor.embedding_service import EmbeddingService
+from .monitor.keyword_registry import KeywordRegistry
 from .monitor.detail_scheduler import DetailScanScheduler
 from .monitor.jokes import DeepSeekJokeGenerator
 from .monitor.joke_service import JokeService
 from .monitor.joke_scheduler import JokeScheduler
+from .monitor.llm_resolver import LlmResolver
+from .monitor.rules_matcher import RulesMatcher
+from .monitor.semantic_matcher import SemanticMatcher
 from .monitor.service import MonitorService
+from .monitor.text_normalizer import TextNormalizer
 from .provider.base import SourceProvider
 from .provider.goszakupki_http import GoszakupkiHttpProvider
 from .provider.icetrade_http import IcetradeHttpProvider
@@ -34,14 +40,27 @@ class Container:
         self.dispatcher: Dispatcher = create_dispatcher()
         self.providers: list[SourceProvider] = self._create_providers()
         self.auth_state = AuthState(login=config.auth.login or "", password=config.auth.password or "", repo=self.repository)
+        self.keyword_registry = KeywordRegistry(self.repository)
+        self.embedding_service = EmbeddingService(config=config.ollama, repository=self.repository)
+        self.rules_matcher = RulesMatcher()
+        self.semantic_matcher = SemanticMatcher(
+            repository=self.repository,
+            embedding_service=self.embedding_service,
+            ollama_config=config.ollama,
+            analysis_config=config.analysis,
+        )
+        self.analysis_pipeline = AnalysisPipeline(
+            repository=self.repository,
+            text_normalizer=TextNormalizer(),
+            keyword_registry=self.keyword_registry,
+            rules_matcher=self.rules_matcher,
+            semantic_matcher=self.semantic_matcher,
+            llm_resolver=LlmResolver(),
+            config=config.analysis,
+        )
         if config.deepseek.enabled and config.deepseek.api_key:
-            LOGGER.info(
-                "DeepSeek semantic analysis enabled", extra={"model": config.deepseek.model}
-            )
-            self.semantic_matcher = DeepSeekSemanticAnalyzer(config.deepseek)
             self.joke_generator = DeepSeekJokeGenerator(config.deepseek)
         else:
-            self.semantic_matcher = None
             self.joke_generator = None
         provider_entries = [
             MonitorService.ProviderEntry(provider=provider, config=provider_config)
@@ -67,7 +86,7 @@ class Container:
             repository=self.repository,
             bot=self.bot,
             auth_state=self.auth_state,
-            semantic_matcher=self.semantic_matcher,
+            analysis_pipeline=self.analysis_pipeline,
         )
         self.detail_scheduler = DetailScanScheduler(
             service=self.detail_service,
@@ -110,6 +129,20 @@ class Container:
 
     async def init_database(self) -> None:
         await init_db(self.engine)
+        prefs = await self.repository.get_or_create_settings(
+            default_interval=min(cfg.check_interval_default for cfg in self.config.providers),
+            default_pages=min(cfg.pages_default for cfg in self.config.providers),
+        )
+        await self.repository.sync_keyword_registry()
+        await self.repository.requeue_outdated_analyses(analysis_version=self.config.analysis.analysis_version)
+        LOGGER.info(
+            "Analysis pipeline initialized",
+            extra={
+                "keyword_version": prefs.keyword_version,
+                "analysis_version": self.config.analysis.analysis_version,
+                "embedding_model": self.config.ollama.embedding_model,
+            },
+        )
 
     async def shutdown(self) -> None:
         try:
@@ -117,8 +150,7 @@ class Container:
                 if hasattr(provider, "shutdown"):
                     await getattr(provider, "shutdown")()
         finally:
-            if self.semantic_matcher is not None:
-                await self.semantic_matcher.close()
+            await self.embedding_service.close()
             if self.joke_generator is not None:
                 await self.joke_generator.close()
             await self.engine.dispose()
