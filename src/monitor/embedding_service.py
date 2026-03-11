@@ -20,6 +20,7 @@ class EmbeddingService:
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max(config.max_concurrency, 1))
+        self._active_model = config.embedding_model
 
     async def close(self) -> None:
         async with self._lock:
@@ -31,14 +32,15 @@ class EmbeddingService:
         normalized = (text or "").strip()
         if not normalized:
             return []
+        model = await self.get_active_model()
         text_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-        cache_key = f"{self._config.embedding_model}:{text_hash}"
+        cache_key = f"{model}:{text_hash}"
         cached = await self._repo.get_embedding_cache(cache_key=cache_key)
         if cached is not None and cached.vector:
             return cached.vector
 
         session = await self._ensure_session()
-        payload = {"model": self._config.embedding_model, "input": normalized}
+        payload = {"model": model, "input": normalized}
         async with self._semaphore:
             async with session.post(self._config.embeddings_api_url, json=payload) as response:
                 if response.status != 200:
@@ -48,12 +50,45 @@ class EmbeddingService:
         vector = self._extract_vector(data)
         await self._repo.upsert_embedding_cache(
             cache_key=cache_key,
-            model=self._config.embedding_model,
+            model=model,
             text_hash=text_hash,
             text_preview=normalized[:250],
             vector=vector,
         )
         return vector
+
+    async def list_models(self) -> list[str]:
+        session = await self._ensure_session()
+        async with self._semaphore:
+            async with session.get(f"{self._config.base_url}/api/tags") as response:
+                if response.status != 200:
+                    body = await response.text()
+                    raise RuntimeError(f"Ollama tags API returned {response.status}: {body[:300]}")
+                data = await response.json()
+        models = data.get("models")
+        if not isinstance(models, list):
+            return []
+        result: list[str] = []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                result.append(name)
+        result.sort()
+        return result
+
+    async def get_active_model(self) -> str:
+        prefs = await self._repo.get_preferences()
+        configured = (prefs.embedding_model if prefs else None) or self._active_model or self._config.embedding_model
+        self._active_model = configured
+        return configured
+
+    async def set_active_model(self, model: str) -> None:
+        model_name = model.strip()
+        if not model_name:
+            raise ValueError("Embedding model name is empty")
+        self._active_model = model_name
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         async with self._lock:

@@ -35,6 +35,7 @@ class SemanticMatcher:
     ) -> AnalysisResult | None:
         if not self._analysis_config.semantic_enabled or not text.strip() or not entries:
             return None
+        active_model = await self._embedding_service.get_active_model()
         document_vector = await self._embedding_service.embed_text(text)
         if not document_vector:
             return None
@@ -42,7 +43,7 @@ class SemanticMatcher:
 
         matches: list[KeywordMatch] = []
         for entry in entries:
-            keyword_vector = await self._load_keyword_vector(entry)
+            keyword_vector = await self._load_keyword_vector(entry, model=active_model)
             if not keyword_vector:
                 continue
             semantic_score = _cosine_similarity(document_vector, keyword_vector)
@@ -97,10 +98,10 @@ class SemanticMatcher:
             analysis_version=analysis_version,
         )
 
-    async def _load_keyword_vector(self, entry: KeywordEntryView) -> list[float]:
+    async def _load_keyword_vector(self, entry: KeywordEntryView, *, model: str) -> list[float]:
         cached = await self._repo.get_keyword_embedding(
             keyword_id=entry.id,
-            model=self._ollama_config.embedding_model,
+            model=model,
         )
         if cached is not None and cached.vector:
             return cached.vector
@@ -108,7 +109,7 @@ class SemanticMatcher:
         if vector:
             await self._repo.upsert_keyword_embedding(
                 keyword_id=entry.id,
-                model=self._ollama_config.embedding_model,
+                model=model,
                 vector=vector,
             )
         return vector

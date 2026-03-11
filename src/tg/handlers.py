@@ -19,6 +19,7 @@ from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
+from ..monitor.embedding_service import EmbeddingService
 from ..monitor.joke_service import JokeService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
@@ -62,6 +63,7 @@ def create_router(
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
+    embedding_service: EmbeddingService,
     joke_service: JokeService | None,
     provider_configs: list[ProviderConfig],
     auth: AppConfig.AuthConfig,
@@ -168,6 +170,7 @@ def create_router(
                 /settings — открыть настройки
                 /set_keywords — задать ключевые слова сообщением
                 /keywords — управление по одному (добавление/удаление)
+                /models — выбрать embedding-модель Ollama
                 /set_interval <интервал> — например: 5m, 1h, 30s
                 /set_pages <число> — количество страниц для проверки
                 /enable — включить мониторинг
@@ -239,6 +242,10 @@ def create_router(
         text = _format_preferences(prefs)
         await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
 
+    @router.message(Command("models"))
+    async def command_models(message: Message) -> None:
+        await _send_embedding_models_page(message, repo, embedding_service, page=1, edit=False)
+
     @router.message(Command("status"))
     async def command_status(message: Message, command: CommandObject) -> None:
         prefs = await repo.get_preferences()
@@ -290,6 +297,10 @@ def create_router(
             return
         text = _format_preferences(prefs)
         await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
+
+    @router.message(F.text.casefold() == "модель ai")
+    async def ru_embedding_model_menu(message: Message) -> None:
+        await _send_embedding_models_page(message, repo, embedding_service, page=1, edit=False)
 
     @router.message(F.text.casefold() == "статус")
     async def ru_status(message: Message) -> None:
@@ -590,6 +601,69 @@ def create_router(
         except Exception:
             page = 1
         await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("ai_models:"))
+    async def ai_models_cb(callback: CallbackQuery) -> None:
+        try:
+            _, page_str = (callback.data or "").split(":", 1)
+            page = max(1, int(page_str))
+        except Exception:
+            page = 1
+        await _send_embedding_models_page(
+            callback.message,
+            repo,
+            embedding_service,
+            page=page,
+            edit=True,
+        )  # type: ignore[arg-type]
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("ai_model_set:"))
+    async def ai_model_set_cb(callback: CallbackQuery) -> None:
+        model_name = (callback.data or "").split(":", 1)[1].strip()
+        if not model_name:
+            await callback.answer("Модель не указана", show_alert=True)
+            return
+        try:
+            available = await embedding_service.list_models()
+        except Exception:
+            LOGGER.exception("Failed to list Ollama models for selection")
+            await callback.answer("Не удалось получить список моделей из Ollama", show_alert=True)
+            return
+        if model_name not in available:
+            await callback.answer("Модель не найдена в Ollama", show_alert=True)
+            return
+        try:
+            await repo.set_embedding_model(model_name)
+            await embedding_service.set_active_model(model_name)
+            requeued = await repo.requeue_all_analyses()
+        except StorageFullError:
+            LOGGER.warning("Failed to update embedding model: storage full", extra={"model": model_name})
+            await _notify_storage_full_callback(callback)
+            return
+        await callback.answer("Модель обновлена", show_alert=False)
+        await _send_embedding_models_page(
+            callback.message,
+            repo,
+            embedding_service,
+            page=1,
+            edit=True,
+            notice=f"Активная модель: {model_name}. Переотправлено в анализ: {requeued}",
+        )  # type: ignore[arg-type]
+
+    @router.callback_query(F.data == "ai_model_back_settings")
+    async def ai_model_back_settings_cb(callback: CallbackQuery) -> None:
+        prefs = await repo.get_preferences()
+        text = _format_preferences(prefs) if prefs else "Настройки недоступны"
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            text,
+            reply_markup=settings_menu_keyboard(prefs.enabled if prefs else False),
+        )
         await callback.answer()
 
     @router.callback_query(F.data.startswith("kw_clear_all:"))
@@ -932,12 +1006,14 @@ def _format_preferences(prefs: AppPreferences) -> str:
         "Настройки:",
         f"• Интервал проверки: {prefs.interval_seconds} сек.",
         f"• Страниц для проверки: {prefs.pages}",
+        f"• Embedding-модель: {prefs.embedding_model or '(по умолчанию)'}",
         "",
         "Ключевые слова:",
         kws_display,
         "",
         "Подсказки:",
         "• Кнопка ‘Ключевые слова’ — пришлите список, по одному на строку",
+        "• Кнопка ‘Модель AI’ — выбрать embedding-модель Ollama",
         "• ‘Интервал’ — например: 5m, 1h, 30s",
         "• ‘Страницы’ — положительное целое число",
         "• ‘Назад’ — вернуться в главное меню",
@@ -966,6 +1042,7 @@ async def _format_status(
         f"Статус мониторинга: {status}",
         f"Интервал опроса: {prefs.interval_seconds} сек.",
         f"Страниц для проверки: {prefs.pages}",
+        f"Embedding-модель: {prefs.embedding_model or '(по умолчанию)'}",
         "",
         f"Очередь детсканера: {pending_detail}",
     ]
@@ -1042,6 +1119,85 @@ def _format_test_message(provider_configs: list[ProviderConfig]) -> str:
             )
         )
     return "\n\n".join(blocks)
+
+
+async def _send_embedding_models_page(
+    target: Message,
+    repo: Repository,
+    embedding_service: EmbeddingService,
+    *,
+    page: int,
+    per_page: int = 8,
+    edit: bool = False,
+    notice: str | None = None,
+) -> None:
+    prefs = await repo.get_preferences()
+    current_model = (prefs.embedding_model if prefs else None) or await embedding_service.get_active_model()
+    try:
+        items = await embedding_service.list_models()
+    except Exception:
+        LOGGER.exception("Failed to list Ollama models")
+        text = "Не удалось получить список моделей из Ollama. Проверьте, что Ollama запущен и доступен."
+        if edit:
+            try:
+                await target.edit_text(text)
+            except Exception:
+                await target.answer(text)
+        else:
+            await target.answer(text)
+        return
+
+    if not items:
+        text = "Ollama не вернул ни одной модели. Сначала скачайте модель через `ollama pull ...`."
+        if edit:
+            try:
+                await target.edit_text(text)
+            except Exception:
+                await target.answer(text)
+        else:
+            await target.answer(text)
+        return
+
+    max_page = max(1, (len(items) + per_page - 1) // per_page)
+    page = max(1, min(page, max_page))
+    start = (page - 1) * per_page
+    end = min(start + per_page, len(items))
+    view = items[start:end]
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for model_name in view:
+        marker = "✅ " if model_name == current_model else ""
+        label = f"{marker}{model_name}"
+        if len(label) > 60:
+            label = label[:57] + "..."
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"ai_model_set:{model_name}")])
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"ai_models:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"ai_models:{page}"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="➡", callback_data=f"ai_models:{page + 1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="⬅ Назад", callback_data="ai_model_back_settings")])
+
+    lines = [
+        "Доступные embedding-модели Ollama:",
+        f"Текущая модель: {current_model}",
+        "",
+        "Нажмите на модель, чтобы сделать её активной.",
+    ]
+    if notice:
+        lines.extend(["", notice])
+    text = "\n".join(lines)
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=kb)
+        except Exception:
+            await target.answer(text, reply_markup=kb)
+    else:
+        await target.answer(text, reply_markup=kb)
 
 
 def _build_clear_detections_keyboard(provider_configs: list[ProviderConfig]) -> InlineKeyboardMarkup:

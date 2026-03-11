@@ -69,21 +69,22 @@ class DetailScanService:
         prefs: AppPreferences | None,
         entry: "DetailScanService.ProviderEntry",
     ) -> None:
-        text = ""
-        try:
-            fetch_detail = getattr(entry.provider, "fetch_detail_text", None)
-            if fetch_detail is None:
-                LOGGER.warning("Provider has no fetch_detail_text; skipping detail scan")
-                await self._repo.complete_detail_scan(item.id)
-                return
-            text = await fetch_detail(item.url)
-            if not text:
+        text = (item.detail_text_raw or "").strip() if item.detail_loaded else ""
+        if not text:
+            try:
+                fetch_detail = getattr(entry.provider, "fetch_detail_text", None)
+                if fetch_detail is None:
+                    LOGGER.warning("Provider has no fetch_detail_text; skipping detail scan")
+                    await self._repo.complete_detail_scan(item.id)
+                    return
+                text = await fetch_detail(item.url)
+                if not text:
+                    await self._handle_retry(item, entry.config)
+                    return
+            except Exception:  # pragma: no cover
+                LOGGER.exception("Detail fetch failed", extra={"url": item.url})
                 await self._handle_retry(item, entry.config)
                 return
-        except Exception:  # pragma: no cover
-            LOGGER.exception("Detail fetch failed", extra={"url": item.url})
-            await self._handle_retry(item, entry.config)
-            return
 
         notified = 0
         result: AnalysisResult | None = None

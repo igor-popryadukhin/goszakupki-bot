@@ -7,6 +7,7 @@
 - Периодический опрос первых N страниц каталога (листинг).
 - Детальный разбор страниц закупок и локальный многоступенчатый анализ: нормализация текста, rules-based matching и семантическое сравнение через Ollama embeddings.
 - Глобальные (единые) настройки: ключевые слова, интервал, число страниц.
+- Выбор активной embedding-модели Ollama прямо из Telegram-бота по списку уже скачанных моделей.
 - Уведомления с названием, ссылкой и номером закупки. Дедупликация уведомлений.
 
 ## Подготовка окружения
@@ -30,7 +31,7 @@
    DETAIL_BACKOFF_MAX_SECONDS=3600
    OLLAMA_HOST=http://127.0.0.1
    OLLAMA_PORT=11434
-   OLLAMA_EMBEDDING_MODEL=embeddinggemma
+   OLLAMA_EMBEDDING_MODEL=qwen3-embedding:4b
    OLLAMA_TIMEOUT_SECONDS=30
    ANALYSIS_SEMANTIC_THRESHOLD=0.84
    ANALYSIS_SEMANTIC_REVIEW_THRESHOLD=0.72

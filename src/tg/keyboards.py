@@ -26,6 +26,7 @@ def settings_menu_keyboard(enabled: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Ключевые слова")],
+            [KeyboardButton(text="Модель AI")],
             [KeyboardButton(text="Интервал"), KeyboardButton(text="Страницы")],
             [KeyboardButton(text="Детекции")],
             [KeyboardButton(text="Очистить детекции")],

@@ -41,6 +41,7 @@ class AppPreferences:
     pages: int
     enabled: bool
     keyword_version: int
+    embedding_model: str | None
 
 
 @dataclass(slots=True)
@@ -84,6 +85,7 @@ class Repository:
                     pages=default_pages,
                     enabled=False,
                     keyword_version=1,
+                    embedding_model=None,
                 )
                 session.add(settings)
                 await _commit(session)
@@ -93,6 +95,7 @@ class Repository:
                 pages=settings.pages,
                 enabled=settings.enabled,
                 keyword_version=getattr(settings, "keyword_version", 1) or 1,
+                embedding_model=getattr(settings, "embedding_model", None),
             )
 
     async def update_keywords(self, keywords: Iterable[str]) -> None:
@@ -191,7 +194,17 @@ class Repository:
                 pages=settings.pages,
                 enabled=settings.enabled,
                 keyword_version=getattr(settings, "keyword_version", 1) or 1,
+                embedding_model=getattr(settings, "embedding_model", None),
             )
+
+    async def set_embedding_model(self, embedding_model: str | None) -> None:
+        value = (embedding_model or "").strip() or None
+        async with self._session_factory() as session:
+            settings = await session.scalar(select(AppSettings).limit(1))
+            if settings is None:
+                raise ValueError("App settings not initialized")
+            settings.embedding_model = value
+            await _commit(session)
 
     async def is_enabled(self) -> bool:
         async with self._session_factory() as session:
@@ -348,6 +361,8 @@ class Repository:
         external_id: str
         url: str
         title: str | None
+        detail_loaded: bool
+        detail_text_raw: str | None
         retry_count: int
         next_retry_at: datetime | None
 
@@ -361,6 +376,8 @@ class Repository:
                     Detection.external_id,
                     Detection.url,
                     Detection.title,
+                    Detection.detail_loaded,
+                    Detection.detail_text_raw,
                     Detection.detail_retry_count,
                     Detection.detail_next_retry_at,
                 )
@@ -383,6 +400,8 @@ class Repository:
                     Detection.external_id,
                     Detection.url,
                     Detection.title,
+                    Detection.detail_loaded,
+                    Detection.detail_text_raw,
                     Detection.detail_retry_count,
                     Detection.detail_next_retry_at,
                 )
@@ -683,6 +702,27 @@ class Repository:
             await _commit(session)
             return int(getattr(result, "rowcount", 0) or 0)
 
+    async def requeue_all_analyses(self) -> int:
+        async with self._session_factory() as session:
+            stmt = (
+                update(Detection)
+                .where(
+                    or_(
+                        Detection.detail_loaded.is_(True),
+                        Detection.detail_text_raw.is_not(None),
+                    )
+                )
+                .values(
+                    detail_scan_pending=True,
+                    analysis_status="pending",
+                    analysis_needs_review=False,
+                    detail_next_retry_at=None,
+                )
+            )
+            result = await session.execute(stmt)
+            await _commit(session)
+            return int(getattr(result, "rowcount", 0) or 0)
+
     # Authorization persistence removed; handled in-memory for this session
 
     # No persistent list of authorized chats in DB
@@ -941,6 +981,7 @@ async def _ensure_legacy_columns(conn) -> None:
         "app_settings",
         {
             "keyword_version": "INTEGER NOT NULL DEFAULT 1",
+            "embedding_model": "VARCHAR(255)",
         },
     )
     await _ensure_columns(

@@ -141,7 +141,7 @@ class DeepSeekConfig:
 class OllamaConfig:
     host: str = "http://127.0.0.1"
     port: int = 11434
-    embedding_model: str = "embeddinggemma"
+    embedding_model: str = "qwen3-embedding:4b"
     llm_model: Optional[str] = None
     timeout_seconds: float = 30.0
     max_concurrency: int = 2
@@ -368,7 +368,7 @@ def load_config() -> AppConfig:
     ollama_config = OllamaConfig(
         host=os.getenv("OLLAMA_HOST", "http://127.0.0.1"),
         port=_get_int("OLLAMA_PORT", 11434),
-        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "embeddinggemma"),
+        embedding_model=os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b"),
         llm_model=os.getenv("OLLAMA_LLM_MODEL") or None,
         timeout_seconds=_get_float("OLLAMA_TIMEOUT_SECONDS", 30.0),
         max_concurrency=_get_int("OLLAMA_MAX_CONCURRENCY", 2),

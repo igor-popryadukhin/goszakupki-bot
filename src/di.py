@@ -133,6 +133,9 @@ class Container:
             default_interval=min(cfg.check_interval_default for cfg in self.config.providers),
             default_pages=min(cfg.pages_default for cfg in self.config.providers),
         )
+        if not prefs.embedding_model:
+            await self.repository.set_embedding_model(self.config.ollama.embedding_model)
+            prefs = await self.repository.get_preferences() or prefs
         await self.repository.sync_keyword_registry()
         await self.repository.requeue_outdated_analyses(analysis_version=self.config.analysis.analysis_version)
         LOGGER.info(
@@ -140,7 +143,7 @@ class Container:
             extra={
                 "keyword_version": prefs.keyword_version,
                 "analysis_version": self.config.analysis.analysis_version,
-                "embedding_model": self.config.ollama.embedding_model,
+                "embedding_model": prefs.embedding_model or self.config.ollama.embedding_model,
             },
         )
 

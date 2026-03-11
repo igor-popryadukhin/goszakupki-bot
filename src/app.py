@@ -32,6 +32,7 @@ async def main() -> None:
         container.scheduler,
         container.detail_scheduler,
         container.detail_service,
+        container.embedding_service,
         container.joke_service,
         config.providers,
         config.auth,
