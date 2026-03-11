@@ -139,3 +139,31 @@ def test_analysis_pipeline_persists_result() -> None:
     assert repo.detail_payloads
     assert repo.analysis_payloads[0]["analysis_version"] == 9
     assert repo.analysis_payloads[0]["decision_source"] in {"rules", "semantic"}
+
+
+def test_semantic_matcher_does_not_auto_accept_weak_anchor_match() -> None:
+    repo = DummyRepository()
+    matcher = SemanticMatcher(
+        repository=repo,
+        embedding_service=DummyEmbeddingService(
+            {
+                "услуги для городской инфраструктуры": [1.0, 0.0],
+                "серверное оборудование": [1.0, 0.0],
+            }
+        ),
+        ollama_config=OllamaConfig(embedding_model="test-embed"),
+        analysis_config=AnalysisConfig(semantic_threshold=0.84, semantic_review_threshold=0.72, semantic_top_n=3),
+    )
+    entries = [KeywordEntryView(id=5, source_phrase="серверное оборудование", normalized_phrase="серверное оборудование")]
+
+    result = asyncio.run(
+        matcher.match(
+            text="услуги для городской инфраструктуры",
+            entries=entries,
+            analysis_version=5,
+        )
+    )
+
+    assert result is not None
+    assert result.is_relevant is False
+    assert result.needs_review is True

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import math
+import re
 
 from ..config import AnalysisConfig, OllamaConfig
 from ..db.repo import Repository
 from .analysis_types import AnalysisResult, KeywordMatch
 from .embedding_service import EmbeddingService
 from .keyword_registry import KeywordEntryView
+
+_TOKEN_RE = re.compile(r"[a-zA-Zа-яА-Я0-9]+")
 
 
 class SemanticMatcher:
@@ -35,15 +38,20 @@ class SemanticMatcher:
         document_vector = await self._embedding_service.embed_text(text)
         if not document_vector:
             return None
+        text_tokens = _extract_tokens(text)
 
         matches: list[KeywordMatch] = []
         for entry in entries:
             keyword_vector = await self._load_keyword_vector(entry)
             if not keyword_vector:
                 continue
-            score = _cosine_similarity(document_vector, keyword_vector)
-            if score < self._analysis_config.semantic_review_threshold:
+            semantic_score = _cosine_similarity(document_vector, keyword_vector)
+            if semantic_score < self._analysis_config.semantic_review_threshold:
                 continue
+            lexical_support = _best_alias_support(text_tokens, entry.aliases)
+            if lexical_support == 0.0 and semantic_score < (self._analysis_config.semantic_threshold + 0.12):
+                continue
+            score = (semantic_score * 0.8) + (lexical_support * 0.2)
             matches.append(
                 KeywordMatch(
                     keyword_id=entry.id,
@@ -51,7 +59,10 @@ class SemanticMatcher:
                     matched_text=entry.source_phrase,
                     match_type="semantic",
                     score=score,
-                    reason=f"Семантическая близость к фразе: {entry.source_phrase}",
+                    reason=(
+                        f"Семантическая близость {round(semantic_score * 100)}% "
+                        f"и текстовая опора {round(lexical_support * 100)}% к фразе: {entry.source_phrase}"
+                    ),
                 )
             )
 
@@ -61,20 +72,24 @@ class SemanticMatcher:
         matches.sort(key=lambda item: (item.score or 0.0), reverse=True)
         top_matches = matches[: max(self._analysis_config.semantic_top_n, 1)]
         confidence = top_matches[0].score or 0.0
+        top_support = _extract_support(top_matches[0].reason)
         needs_review = False
         is_relevant = confidence >= self._analysis_config.semantic_threshold
         if not is_relevant:
             needs_review = True
         if len(top_matches) > 1:
             top_gap = (top_matches[0].score or 0.0) - (top_matches[1].score or 0.0)
-            if top_gap < 0.03:
+            if top_gap < 0.05:
                 needs_review = True
+        if top_support < 0.2:
+            is_relevant = False
+            needs_review = True
 
         return AnalysisResult(
             is_relevant=is_relevant,
             confidence=confidence,
             matches=top_matches,
-            explanation="Лучшие совпадения найдены по embeddings.",
+            explanation="Лучшие совпадения найдены по embeddings с дополнительной проверкой текстовой опоры.",
             needs_review=needs_review,
             decision_source="semantic",
             summary=text[:280],
@@ -108,3 +123,43 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return numerator / (left_norm * right_norm)
+
+
+def _extract_tokens(text: str) -> list[str]:
+    return [token.lower() for token in _TOKEN_RE.findall(text) if len(token) >= 4]
+
+
+def _best_alias_support(text_tokens: list[str], aliases: list[str]) -> float:
+    if not text_tokens:
+        return 0.0
+    best = 0.0
+    for alias in aliases:
+        alias_tokens = _extract_tokens(alias)
+        if not alias_tokens:
+            continue
+        hits = 0
+        for alias_token in alias_tokens:
+            if any(_tokens_related(alias_token, text_token) for text_token in text_tokens):
+                hits += 1
+        best = max(best, hits / len(alias_tokens))
+    return best
+
+
+def _tokens_related(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if left.startswith(right) or right.startswith(left):
+        return True
+    common = 0
+    for left_char, right_char in zip(left, right):
+        if left_char != right_char:
+            break
+        common += 1
+    return common >= 5
+
+
+def _extract_support(reason: str) -> float:
+    match = re.search(r"текстовая опора (\d+)%", reason)
+    if match is None:
+        return 0.0
+    return int(match.group(1)) / 100.0

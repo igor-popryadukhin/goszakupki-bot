@@ -162,8 +162,8 @@ class OllamaConfig:
 @dataclass(slots=True)
 class AnalysisConfig:
     semantic_enabled: bool = True
-    semantic_threshold: float = 0.72
-    semantic_review_threshold: float = 0.6
+    semantic_threshold: float = 0.84
+    semantic_review_threshold: float = 0.72
     semantic_top_n: int = 5
     embedding_cache_enabled: bool = True
     analysis_version: int = 1
@@ -375,8 +375,8 @@ def load_config() -> AppConfig:
     )
     analysis_config = AnalysisConfig(
         semantic_enabled=_get_bool("ANALYSIS_SEMANTIC_ENABLED", True),
-        semantic_threshold=_get_float("ANALYSIS_SEMANTIC_THRESHOLD", 0.72),
-        semantic_review_threshold=_get_float("ANALYSIS_SEMANTIC_REVIEW_THRESHOLD", 0.6),
+        semantic_threshold=_get_float("ANALYSIS_SEMANTIC_THRESHOLD", 0.84),
+        semantic_review_threshold=_get_float("ANALYSIS_SEMANTIC_REVIEW_THRESHOLD", 0.72),
         semantic_top_n=_get_int("ANALYSIS_SEMANTIC_TOP_N", 5),
         embedding_cache_enabled=_get_bool("ANALYSIS_EMBEDDING_CACHE_ENABLED", True),
         analysis_version=_get_int("ANALYSIS_VERSION", 1),

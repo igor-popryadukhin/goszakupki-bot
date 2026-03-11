@@ -114,6 +114,7 @@ class DetailScanService:
         if (
             result is not None
             and result.is_relevant
+            and not result.needs_review
             and not await self._repo.has_notification_global_sent(item.source_id, item.external_id)
         ):
             message = self._format_message(
