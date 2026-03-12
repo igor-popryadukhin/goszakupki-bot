@@ -86,7 +86,7 @@ class ProviderConfig:
     # Секция детального сканирования
     @dataclass(slots=True)
     class DetailScanConfig:
-        interval_seconds: int = 60
+        interval_seconds: int = 3
         max_retries: int = 5
         backoff_base_seconds: int = 60
         backoff_factor: float = 2.0
@@ -176,7 +176,7 @@ def load_config() -> AppConfig:
     )
 
     # Детскан: интервал берём из нового ENV, либо из старого (для обратной совместимости)
-    detail_interval = _get_int("DETAIL_INTERVAL_SECONDS", _get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60))
+    detail_interval = _get_int("DETAIL_INTERVAL_SECONDS", _get_int("DETAIL_CHECK_INTERVAL_SECONDS", 3))
     detail_max_retries = _get_int("DETAIL_MAX_RETRIES", 5)
     detail_backoff_base = _get_int("DETAIL_BACKOFF_BASE_SECONDS", 60)
     detail_backoff_factor = _get_float("DETAIL_BACKOFF_FACTOR", 2.0)
@@ -187,7 +187,7 @@ def load_config() -> AppConfig:
         base_url=os.getenv("SOURCE_BASE_URL", "https://goszakupki.by/tenders/posted"),
         pages_default=_get_int("SOURCE_PAGES_DEFAULT", 2),
         check_interval_default=_get_int("CHECK_INTERVAL_DEFAULT", 300),
-        detail_check_interval_seconds=_get_int("DETAIL_CHECK_INTERVAL_SECONDS", 60),
+        detail_check_interval_seconds=_get_int("DETAIL_CHECK_INTERVAL_SECONDS", 3),
         http_timeout_seconds=_get_int("HTTP_TIMEOUT_SECONDS", 10),
         http_concurrency=_get_int("HTTP_CONCURRENCY", 3),
         rate_limit_rps=_get_float("RATE_LIMIT_RPS", 2.0),
