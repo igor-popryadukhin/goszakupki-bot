@@ -215,9 +215,9 @@ update_env_file() {
     awk '
       BEGIN {
         split(keys, raw_keys, "\n")
-        for (index in raw_keys) {
-          if (raw_keys[index] != "") {
-            managed[raw_keys[index]] = 1
+        for (key_idx in raw_keys) {
+          if (raw_keys[key_idx] != "") {
+            managed[raw_keys[key_idx]] = 1
           }
         }
       }
