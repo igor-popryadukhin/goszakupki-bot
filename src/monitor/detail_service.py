@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
-from .match import Keyword, compile_keywords, find_matching_keywords
+from .match import Keyword, compile_keywords
 from .semantic import SemanticMatcher, SemanticMatch
 
 LOGGER = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ class DetailScanService:
         if prefs and prefs.enabled and keywords:
             matched: list[Keyword] = []
             combined_text = self._combine_title_and_text(item.title, text)
+            analysis = None
             if self._semantic_matcher and text:
                 try:
                     analysis = await self._semantic_matcher.match_keywords(
@@ -92,7 +93,11 @@ class DetailScanService:
                     )
                 except Exception:
                     LOGGER.exception("Semantic matcher failed")
-                    analysis = None
+                if analysis is None:
+                    LOGGER.info(
+                        "Detail skipped: DeepSeek returned no decision",
+                        extra={"external_id": item.external_id, "reason": "skipped_no_ai_match"},
+                    )
                 if analysis and analysis.matches:
                     lookup = {kw.raw.casefold(): kw for kw in keywords}
                     for match in analysis.matches:
@@ -111,13 +116,11 @@ class DetailScanService:
                             )
                         )
                     semantic_summary = (analysis.summary or "").strip() or None
-            if not matched:
-                matched = find_matching_keywords(combined_text, keywords)
-                if matched:
-                    LOGGER.info(
-                        "Detail fallback matched keywords without DeepSeek",
-                        extra={"external_id": item.external_id, "keywords": [kw.raw for kw in matched]},
-                    )
+            else:
+                LOGGER.info(
+                    "Detail skipped: semantic matcher is disabled",
+                    extra={"external_id": item.external_id, "reason": "skipped_ai_error"},
+                )
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(
                     item.url,
@@ -142,7 +145,16 @@ class DetailScanService:
                         except Exception:
                             LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
                 if notified > 0:
+                    LOGGER.info(
+                        "Detail notified by DeepSeek",
+                        extra={"external_id": item.external_id, "reason": "notified_by_ai", "targets": notified},
+                    )
                     await self._repo.create_notification_global(self._config.source_id, item.external_id, sent=True)
+            elif analysis is not None and not matched:
+                LOGGER.info(
+                    "Detail skipped: DeepSeek found no relevant keywords",
+                    extra={"external_id": item.external_id, "reason": "skipped_no_ai_match"},
+                )
 
         LOGGER.debug(
             "Detail processed",
