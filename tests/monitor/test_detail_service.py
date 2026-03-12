@@ -29,6 +29,8 @@ class DummyRepository:
         self.detail_completed: list[int] = []
         self.detail_loaded: list[tuple[int, bool]] = []
         self.notifications_created: list[tuple[str, str, bool]] = []
+        self.pending_items: list[DummyPendingDetail] = []
+        self.preferences = type("Prefs", (), {"enabled": True, "keywords": ["сервер"]})()
 
     async def mark_detail_loaded(self, detection_id: int, success: bool) -> None:
         self.detail_loaded.append((detection_id, success))
@@ -41,6 +43,15 @@ class DummyRepository:
 
     async def complete_detail_scan(self, detection_id: int) -> None:
         self.detail_completed.append(detection_id)
+
+    async def list_pending_detail(self, *, limit: int = 50) -> list[DummyPendingDetail]:
+        return self.pending_items[:limit]
+
+    async def count_pending_detail(self) -> int:
+        return max(len(self.pending_items) - len(self.detail_completed), 0)
+
+    async def get_preferences(self):  # noqa: ANN201
+        return self.preferences
 
 
 class DummyBot:
@@ -87,6 +98,7 @@ def make_service(semantic_matcher: DummySemanticMatcher | None) -> tuple[DetailS
         rate_limit_rps=2.0,
         selectors=None,  # type: ignore[arg-type]
     )
+    provider_config.detail.concurrency = 2
     service = DetailScanService(
         provider=DummyProvider(),
         repository=repository,
@@ -172,3 +184,28 @@ def test_process_item_skips_when_deepseek_times_out() -> None:
     assert repository.detail_completed == [1]
     assert repository.notifications_created == []
     assert bot.messages == []
+
+
+def test_run_scan_processes_two_items_per_tick_and_sends_sequentially() -> None:
+    analysis = SemanticAnalysis(
+        summary="Закупка серверного оборудования.",
+        matches=[SemanticMatch(keyword="сервер", score=0.92, reason="Упомянута поставка серверного оборудования")],
+    )
+    service, repository, bot = make_service(DummySemanticMatcher(result=analysis))
+    repository.pending_items = [
+        DummyPendingDetail(id=1, external_id="auc1"),
+        DummyPendingDetail(id=2, external_id="auc2"),
+        DummyPendingDetail(id=3, external_id="auc3"),
+    ]
+
+    async def run() -> None:
+        await service._run_scan()  # type: ignore[attr-defined]
+
+    asyncio.run(run())
+
+    assert repository.detail_completed == [1, 2]
+    assert repository.notifications_created == [
+        ("goszakupki.by", "auc1", True),
+        ("goszakupki.by", "auc2", True),
+    ]
+    assert [message["chat_id"] for message in bot.messages] == [101, 101]

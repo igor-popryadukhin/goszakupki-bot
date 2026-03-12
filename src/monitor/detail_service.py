@@ -31,6 +31,7 @@ class DetailScanService:
         self._bot = bot
         self._config = provider_config
         self._lock = asyncio.Lock()
+        self._notify_lock = asyncio.Lock()
         self._auth_state = auth_state
         self._semantic_matcher = semantic_matcher
 
@@ -42,16 +43,17 @@ class DetailScanService:
                 LOGGER.exception("Error during detail scan")
 
     async def _run_scan(self) -> None:
-        item = await self._repo.get_next_pending_detail()
-        if not item:
+        batch_size = max(self._config.detail.concurrency, 1)
+        items = await self._repo.list_pending_detail(limit=batch_size)
+        if not items:
             remaining = await self._repo.count_pending_detail()
             LOGGER.info("Detail scan tick", extra={"pulled": 0, "remaining": remaining})
             return
         prefs = await self._repo.get_preferences()
         keywords = compile_keywords(prefs.keywords) if (prefs and prefs.enabled) else []
-        await self._process_item(item, prefs, keywords)
+        await asyncio.gather(*(self._process_item(item, prefs, keywords) for item in items))
         remaining = await self._repo.count_pending_detail()
-        LOGGER.info("Detail scan tick", extra={"pulled": 1, "remaining": remaining})
+        LOGGER.info("Detail scan tick", extra={"pulled": len(items), "remaining": remaining, "concurrency": batch_size})
 
     async def _process_item(
         self,
@@ -129,21 +131,7 @@ class DetailScanService:
                     semantic_summary=semantic_summary,
                     semantic_details=semantic_details if semantic_details else None,
                 )
-                # Collect all target chat ids: authorized chats plus user_ids (for private chats)
-                targets_getter = getattr(self._auth_state, "all_targets", None)
-                if callable(targets_getter):
-                    targets = list(targets_getter())
-                else:
-                    targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
-                if not targets:
-                    LOGGER.debug("Detail skip: no authorized chats in session")
-                else:
-                    for chat_id in targets:
-                        try:
-                            await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
-                            notified += 1
-                        except Exception:
-                            LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
+                notified = await self._send_notification_sequentially(message)
                 if notified > 0:
                     LOGGER.info(
                         "Detail notified by DeepSeek",
@@ -161,6 +149,26 @@ class DetailScanService:
             extra={"id": item.id, "loaded": bool(text), "notified": notified},
         )
         await self._repo.complete_detail_scan(item.id)
+
+    async def _send_notification_sequentially(self, message: str) -> int:
+        async with self._notify_lock:
+            targets_getter = getattr(self._auth_state, "all_targets", None)
+            if callable(targets_getter):
+                targets = list(targets_getter())
+            else:
+                targets = getattr(self._auth_state, "authorized_targets", lambda: [])()
+            if not targets:
+                LOGGER.debug("Detail skip: no authorized chats in session")
+                return 0
+
+            notified = 0
+            for chat_id in targets:
+                try:
+                    await self._bot.send_message(chat_id=chat_id, text=message, disable_web_page_preview=False)
+                    notified += 1
+                except Exception:
+                    LOGGER.exception("Failed to send detail notification", extra={"chat_id": chat_id})
+            return notified
 
     @staticmethod
     def _combine_title_and_text(title: str | None, text: str) -> str:

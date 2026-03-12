@@ -43,7 +43,8 @@
    HTTP_CONCURRENCY=3
    RATE_LIMIT_RPS=2
    HTTP_VERIFY_SSL=0
-   DETAIL_INTERVAL_SECONDS=10
+   DETAIL_INTERVAL_SECONDS=3
+   DETAIL_CONCURRENCY=2
    DETAIL_MAX_RETRIES=5
    DETAIL_BACKOFF_BASE_SECONDS=60
    DETAIL_BACKOFF_FACTOR=2.0
@@ -82,7 +83,8 @@
    - `GZ_PREFER_TABLE` — если 1, использовать табличный разбор раздела заявок (`//*[@id="w0"]/table/tbody/tr`) как основной метод.
    
    Параметры детального сканера:
-   - `DETAIL_INTERVAL_SECONDS` — интервал тика детсканера (сканер всегда активен). Обрабатывается по одной записи за тик.
+   - `DETAIL_INTERVAL_SECONDS` — интервал тика детсканера.
+   - `DETAIL_CONCURRENCY` — сколько закупок детсканер может обрабатывать параллельно за один тик. Отправка в Telegram остаётся последовательной.
    - `DETAIL_MAX_RETRIES` — максимальное число повторов при неудачной загрузке.
    - `DETAIL_BACKOFF_BASE_SECONDS` — базовая задержка перед повтором.
    - `DETAIL_BACKOFF_FACTOR` — множитель экспоненты (2.0 означает удвоение задержки на каждый повтор).
