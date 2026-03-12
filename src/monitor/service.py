@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
-from dataclasses import dataclass
 from typing import Sequence
 
 from aiogram import Bot
@@ -17,22 +15,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 class MonitorService:
-    @dataclass(slots=True)
-    class ProviderEntry:
-        provider: SourceProvider
-        config: ProviderConfig
-
     def __init__(
         self,
         *,
-        providers: Sequence["MonitorService.ProviderEntry"],
+        provider: SourceProvider,
         repository: Repository,
         bot: Bot,
+        provider_config: ProviderConfig,
         auth_state: "AuthState",
     ) -> None:
-        self._providers = list(providers)
+        self._provider = provider
         self._repo = repository
         self._bot = bot
+        self._config = provider_config
         self._lock = asyncio.Lock()
         self._auth_state = auth_state
 
@@ -48,36 +43,34 @@ class MonitorService:
         if not prefs or not prefs.enabled:
             LOGGER.debug("Skip monitor iteration: disabled")
             return
-        for entry in self._providers:
-            max_pages = prefs.pages if prefs.pages > 0 else entry.config.pages_default
-            LOGGER.debug(
-                "Starting monitor iteration",
-                extra={
-                    "mode": "global",
-                    "max_pages": max_pages,
-                    "source": entry.config.source_id,
-                },
-            )
+        max_pages = prefs.pages if prefs.pages > 0 else self._config.pages_default
+        LOGGER.debug(
+            "Starting monitor iteration",
+            extra={
+                "mode": "global",
+                "max_pages": max_pages,
+                "source": self._config.source_id,
+            },
+        )
 
-            for page in range(1, max_pages + 1):
-                listings = await entry.provider.fetch_page(page)
-                LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
-                if not listings:
-                    continue
-                await self._process_page(page, listings, prefs, entry.config)
+        for page in range(1, max_pages + 1):
+            listings = await self._provider.fetch_page(page)
+            LOGGER.debug("Fetched page listings", extra={"page": page, "count": len(listings)})
+            if not listings:
+                continue
+            await self._process_page(page, listings, prefs)
 
     async def _process_page(
         self,
         page: int,
         listings: Sequence[Listing],
         prefs: AppPreferences,
-        provider_config: ProviderConfig,
     ) -> None:
         inserted = 0
         notified_total = 0
         for listing in listings:
             is_new = await self._repo.record_detection(
-                source_id=provider_config.source_id,
+                source_id=self._config.source_id,
                 external_id=listing.external_id,
                 title=listing.title,
                 url=listing.url,
@@ -104,43 +97,30 @@ class MonitorService:
         listing: Listing,
         prefs: AppPreferences,
         keywords: list[Keyword],
-        provider_config: ProviderConfig,
     ) -> int:
         # Disabled: notifications are only sent after detail text scan
-        LOGGER.debug(
-            "List-stage notifications disabled; waiting for detail scan",
-            extra={"id": listing.external_id, "page": page, "source": provider_config.source_id},
-        )
+        LOGGER.debug("List-stage notifications disabled; waiting for detail scan", extra={"id": listing.external_id, "page": page})
         return 0
 
-    def _format_message(
-        self,
-        listing: Listing,
-        *,
-        source_id: str,
-        matched_keywords: list[str] | None = None,
-    ) -> str:
+    def _format_message(self, listing: Listing, matched_keywords: list[str] | None = None) -> str:
         title = listing.title or "Без названия"
-        title_text = html.escape(title)
-        url_text = html.escape(listing.url or "")
-        external_id_text = html.escape(listing.external_id or "")
         lines = [
-            f"<b>🛒 Новая закупка ({html.escape(source_id)})</b>",
-            f"<b>Название:</b> {title_text}",
-            f"<b>Ссылка:</b> {url_text}",
-            f"<b>Номер:</b> {external_id_text}",
+            f"🛒 Новая закупка ({self._config.source_id})",
+            f"Название: {title}",
+            f"Ссылка: {listing.url}",
+            f"Номер: {listing.external_id}",
         ]
         if matched_keywords:
             lines.append(f"Совпадение по: {self._format_keywords(matched_keywords)}")
         if getattr(listing, "procedure_type", None):
-            lines.append(f"<b>Вид:</b> {html.escape(str(listing.procedure_type))}")
+            lines.append(f"Вид: {listing.procedure_type}")
         if getattr(listing, "status", None):
-            lines.append(f"<b>Статус:</b> {html.escape(str(listing.status))}")
+            lines.append(f"Статус: {listing.status}")
         if getattr(listing, "deadline", None):
-            lines.append(f"<b>До:</b> {html.escape(str(listing.deadline))}")
+            lines.append(f"До: {listing.deadline}")
         if getattr(listing, "price", None):
-            lines.append(f"<b>Стоимость:</b> {html.escape(str(listing.price))}")
-        return "\n\n".join(lines)
+            lines.append(f"Стоимость: {listing.price}")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_keywords(keywords: list[str], *, limit: int = 5) -> str:

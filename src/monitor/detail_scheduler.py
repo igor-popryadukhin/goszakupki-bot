@@ -19,12 +19,12 @@ class DetailScanScheduler:
         *,
         service: DetailScanService,
         repository: Repository,
-        provider_configs: list[ProviderConfig],
+        provider_config: ProviderConfig,
         logging_config: LoggingConfig,
     ) -> None:
         self._service = service
         self._repo = repository
-        self._provider_configs = provider_configs
+        self._provider_config = provider_config
         self._scheduler = AsyncIOScheduler(timezone=logging_config.timezone)
         self._job = None
 
@@ -54,7 +54,4 @@ class DetailScanScheduler:
 
     async def _determine_interval(self) -> int:
         # Жёстко используем значение из конфигурации, минимум 1 сек.
-        if not self._provider_configs:
-            return 1
-        interval = min(cfg.detail.interval_seconds for cfg in self._provider_configs)
-        return max(interval, 1)
+        return max(self._provider_config.detail.interval_seconds, 1)

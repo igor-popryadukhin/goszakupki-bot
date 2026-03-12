@@ -1,26 +1,24 @@
 from __future__ import annotations
 
 import logging
-import html
 from textwrap import dedent
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import Message, ReplyKeyboardRemove, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 import hashlib
 from aiogram.filters import StateFilter
 
-from ..config import ProviderConfig, AppConfig
-from ..db.repo import AppPreferences, Repository, StorageFullError
+from ..config import ProviderConfig, AppConfig, DeepSeekConfig
+from ..db.repo import Repository, AppPreferences
 from .auth_state import AuthState
 from ..monitor.scheduler import MonitorScheduler
 from ..monitor.detail_scheduler import DetailScanScheduler
 from ..monitor.detail_service import DetailScanService
-from ..monitor.embedding_service import EmbeddingService
-from ..monitor.joke_service import JokeService
+from ..monitor.deepseek_balance import DeepSeekBalanceService
 from ..util.timeparse import parse_duration
 from .keyboards import main_menu_keyboard, settings_menu_keyboard
 
@@ -42,36 +40,28 @@ class KeywordAddForm(StatesGroup):
 
 ADMIN_USER_ID = 693950562
 
-STORAGE_FULL_MESSAGE = (
-    "Не удалось сохранить изменения: закончилось свободное место в базе данных бота. "
-    "Освободите место (например, удалите старые записи) и повторите попытку."
-)
-
-
-async def _notify_storage_full_message(message: Message) -> None:
-    await message.answer(STORAGE_FULL_MESSAGE)
-
-
-async def _notify_storage_full_callback(callback: CallbackQuery) -> None:
-    await callback.answer(STORAGE_FULL_MESSAGE, show_alert=True)
-    if callback.message:
-        await callback.message.answer(STORAGE_FULL_MESSAGE)
-
 
 def create_router(
     repo: Repository,
     monitor_scheduler: MonitorScheduler,
     detail_scheduler: DetailScanScheduler,
     detail_service: DetailScanService,
-    embedding_service: EmbeddingService,
-    joke_service: JokeService | None,
-    provider_configs: list[ProviderConfig],
+    deepseek_balance_service: DeepSeekBalanceService | None,
+    provider_config: ProviderConfig,
+    deepseek_config: DeepSeekConfig,
     auth: AppConfig.AuthConfig,
     auth_state: AuthState,
 ) -> Router:
     router = Router()
-    provider_map = {config.source_id: config for config in provider_configs}
-    default_provider = provider_configs[0] if provider_configs else None
+
+    balance_available = bool(deepseek_balance_service and deepseek_config.enabled and deepseek_config.api_key)
+
+    def main_kb(enabled: bool, *, is_admin: bool) -> ReplyKeyboardMarkup:
+        return main_menu_keyboard(
+            enabled,
+            admin=is_admin,
+            deepseek_balance_available=balance_available,
+        )
 
     # Secret admin section: view authorized users
     @router.message(Command("auth"))
@@ -128,12 +118,9 @@ def create_router(
             )
             return
 
-        if default_provider is None:
-            await message.answer("Источники не настроены. Проверь конфигурацию.")
-            return
         prefs = await repo.get_or_create_settings(
-            default_interval=default_provider.check_interval_default,
-            default_pages=default_provider.pages_default,
+            default_interval=provider_config.check_interval_default,
+            default_pages=provider_config.pages_default,
         )
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
         await message.answer(
@@ -151,38 +138,34 @@ def create_router(
                 • /help — список команд
                 """
             ).strip(),
-            reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin),
+            reply_markup=main_kb(prefs.enabled, is_admin=is_admin),
         )
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
 
     @router.message(Command("help"))
     async def command_help(message: Message) -> None:
-        await message.answer(
-            dedent(
-                """
-                Быстрый старт:
-                1) «Настройки» → «Ключевые слова» — пришли список (по одному на строку)
-                2) «Интервал»/«Страницы» — при необходимости
-                3) «Назад» → «Включить»
-                
-                Команды:
-                /settings — открыть настройки
-                /set_keywords — задать ключевые слова сообщением
-                /keywords — управление по одному (добавление/удаление)
-                /models — выбрать embedding-модель Ollama
-                /set_interval <интервал> — например: 5m, 1h, 30s
-                /set_pages <число> — количество страниц для проверки
-                /enable — включить мониторинг
-                /disable — выключить мониторинг
-                /status [source_id] — показать статус (для источника или всех)
-                /detections [source_id] — список детекций за неделю
-                /test [source_id] — тестовое уведомление
-                /joke — прислать шутку
-                /cancel — отменить текущий ввод
-                """
-            ).strip()
-        )
+        help_lines = [
+            "Быстрый старт:",
+            "1) «Настройки» → «Ключевые слова» — пришли список (по одному на строку)",
+            "2) «Интервал»/«Страницы» — при необходимости",
+            "3) «Назад» → «Включить»",
+            "",
+            "Команды:",
+            "/settings — открыть настройки",
+            "/set_keywords — задать ключевые слова сообщением",
+            "/keywords — управление по одному (добавление/удаление)",
+            "/set_interval <интервал> — например: 5m, 1h, 30s",
+            "/set_pages <число> — количество страниц для проверки",
+            "/enable — включить мониторинг",
+            "/disable — выключить мониторинг",
+            "/status — показать статус",
+            "/test — тестовое уведомление",
+            "/cancel — отменить текущий ввод",
+        ]
+        if balance_available:
+            help_lines.insert(-2, "/balance — показать текущий баланс DeepSeek")
+        await message.answer("\n".join(help_lines))
 
     @router.message(Command("login"))
     async def command_login(message: Message, state: FSMContext, command: CommandObject) -> None:
@@ -242,51 +225,15 @@ def create_router(
         text = _format_preferences(prefs)
         await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
 
-    @router.message(Command("models"))
-    async def command_models(message: Message) -> None:
-        await _send_embedding_models_page(message, repo, embedding_service, page=1, edit=False)
-
     @router.message(Command("status"))
-    async def command_status(message: Message, command: CommandObject) -> None:
+    async def command_status(message: Message) -> None:
         prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        text = await _format_status(repo, prefs, provider_configs, source_id=source_id)
+        text = await _format_status(repo, prefs, provider_config)
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
-
-    @router.message(Command("detections"))
-    async def command_detections(message: Message, command: CommandObject) -> None:
-        prefs = await repo.get_preferences()
-        if not prefs:
-            await message.answer("Сначала отправь /start")
-            return
-        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        await _send_detections_page(
-            message,
-            repo,
-            provider_map,
-            page=1,
-            source_id=source_id,
-            edit=False,
-        )
-
-    @router.message(Command("joke"))
-    async def command_joke(message: Message) -> None:
-        if joke_service is None:
-            await message.answer("Шутки отключены: DeepSeek не настроен.")
-            return
-        sent = await joke_service.send_to_chat(message.chat.id)
-        if not sent:
-            await message.answer("Не удалось получить шутку. Попробуйте ещё раз чуть позже.")
+        await message.answer(text, reply_markup=main_kb(prefs.enabled, is_admin=is_admin))
 
     # Русские кнопки (ReplyKeyboard) — эквиваленты команд
     @router.message(F.text.casefold() == "настройки")
@@ -298,34 +245,9 @@ def create_router(
         text = _format_preferences(prefs)
         await message.answer(text, reply_markup=settings_menu_keyboard(prefs.enabled))
 
-    @router.message(F.text.casefold() == "модель ai")
-    async def ru_embedding_model_menu(message: Message) -> None:
-        await _send_embedding_models_page(message, repo, embedding_service, page=1, edit=False)
-
     @router.message(F.text.casefold() == "статус")
     async def ru_status(message: Message) -> None:
-        prefs = await repo.get_preferences()
-        if not prefs:
-            await message.answer("Сначала отправь /start")
-            return
-        text = await _format_status(repo, prefs, provider_configs)
-        is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer(text, reply_markup=main_menu_keyboard(prefs.enabled, admin=is_admin))
-
-    @router.message(F.text.casefold() == "детекции")
-    async def ru_detections(message: Message) -> None:
-        await _send_detections_page(
-            message,
-            repo,
-            provider_map,
-            page=1,
-            source_id=None,
-            edit=False,
-        )
-
-    @router.message(F.text.casefold() == "шутка")
-    async def ru_joke(message: Message) -> None:
-        await command_joke(message)
+        await command_status(message)
 
     @router.message(F.text.casefold() == "помощь")
     async def ru_help(message: Message) -> None:
@@ -335,34 +257,29 @@ def create_router(
     async def ru_back(message: Message) -> None:
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Главное меню", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Главное меню", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Очистка детекций: подтверждение через inline-кнопки
     @router.message(F.text.casefold() == "очистить детекции")
     async def ru_clear_detections_prompt(message: Message) -> None:
-        kb = _build_clear_detections_keyboard(provider_configs)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Подтвердить очистку", callback_data="confirm_clear_det"),
+                    InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det"),
+                ]
+            ]
+        )
         await message.answer(
-            "Внимание: будут удалены все детекции для выбранного источника. Уведомления не трогаем.",
+            "Внимание: будут удалены все детекции для текущего источника. Уведомления не трогаем.",
             reply_markup=kb,
         )
 
-    @router.callback_query(F.data.startswith("confirm_clear_det:"))
+    @router.callback_query(F.data == "confirm_clear_det")
     async def clear_detections_cb(callback: CallbackQuery) -> None:
-        if not callback.data:
-            await callback.answer("Нет данных", show_alert=True)
-            return
-        _, source_id = callback.data.split(":", 1)
-        source_id = source_id.strip()
-        if not source_id:
-            await callback.answer("Источник не указан", show_alert=True)
-            return
-        if source_id != "all" and source_id not in provider_map:
-            await callback.answer("Неизвестный источник", show_alert=True)
-            return
         try:
-            deleted = await repo.clear_detections(source_id=None if source_id == "all" else source_id)
-            label = "все источники" if source_id == "all" else source_id
-            await callback.message.answer(f"Очистка завершена ({label}). Удалено записей: {deleted}")
+            deleted = await repo.clear_detections(source_id=provider_config.source_id)
+            await callback.message.answer(f"Очистка завершена. Удалено записей: {deleted}")
         except Exception:
             LOGGER.exception("Failed to clear detections")
             await callback.message.answer("Ошибка при очистке детекций")
@@ -373,46 +290,6 @@ def create_router(
         await callback.message.answer("Очистка отменена")
         await callback.answer()
 
-    @router.callback_query(F.data.startswith("det_list:"))
-    async def detections_list_cb(callback: CallbackQuery) -> None:
-        if not callback.data:
-            await callback.answer("Нет данных", show_alert=True)
-            return
-        try:
-            _, page_str, raw_source = callback.data.split(":", 2)
-            page = int(page_str)
-        except Exception:
-            await callback.answer("Некорректная страница", show_alert=True)
-            return
-        if page < 1:
-            page = 1
-        source_id = None if raw_source == "all" else raw_source
-        if source_id and source_id not in provider_map:
-            await callback.answer("Неизвестный источник", show_alert=True)
-            return
-        await _send_detections_page(
-            callback.message,
-            repo,
-            provider_map,
-            page=page,
-            source_id=source_id,
-            edit=True,
-        )  # type: ignore[arg-type]
-        await callback.answer()
-
-    @router.callback_query(F.data == "det_back_menu")
-    async def detections_back_cb(callback: CallbackQuery) -> None:
-        prefs = await repo.get_preferences()
-        await callback.message.answer(
-            "Настройки",
-            reply_markup=settings_menu_keyboard(prefs.enabled if prefs else False),
-        )
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.answer()
-
     # Глобальная отмена доступна в любом состоянии
     @router.message(Command("cancel"), StateFilter("*"))
     @router.message(F.text.casefold() == "отмена", StateFilter("*"))
@@ -420,7 +297,7 @@ def create_router(
         await state.clear()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Операция отменена", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     @router.message(Command("set_keywords"))
     async def command_set_keywords(message: Message, state: FSMContext) -> None:
@@ -462,24 +339,18 @@ def create_router(
             await message.answer("Сейчас идёт ввод ключевых слов. Отправь список или нажми ‘Отмена’.")
             return
         lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        try:
-            await repo.update_keywords(lines)
-        except StorageFullError:
-            LOGGER.warning("Failed to update keywords: storage full", extra={"keywords": len(lines)})
-            await state.clear()
-            await _notify_storage_full_message(message)
-            return
+        await repo.update_keywords(lines)
         await state.clear()
         prefs2 = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Ключевые слова обновлены", reply_markup=main_menu_keyboard(prefs2.enabled if prefs2 else False, admin=is_admin))
+        await message.answer("Ключевые слова обновлены", reply_markup=main_kb(prefs2.enabled if prefs2 else False, is_admin=is_admin))
 
     @router.callback_query(F.data == "cancel_keywords")
     async def cancel_keywords_cb(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
         prefs = await repo.get_preferences()
         is_admin = bool(callback.from_user and callback.from_user.id == ADMIN_USER_ID)
-        await callback.message.answer("Операция отменена", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await callback.message.answer("Операция отменена", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
         await callback.answer()
 
     @router.message(F.text.casefold() == "ключевые слова")
@@ -508,7 +379,7 @@ def create_router(
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="kw_cancel_add")]])
         await callback.message.answer(
             "Введите ключевое слово для добавления:\n\n"
-            "Советы для локального семантического поиска:\n"
+            "Советы для семантического поиска DeepSeek:\n"
             "• Формулируйте короткие описательные фразы (до 3–5 слов).\n"
             "• Добавляйте важные параметры: предмет закупки, материалы, регион, объём.\n"
             "• Избегайте длинных предложений и объединяйте разные идеи отдельными ключами.",
@@ -528,14 +399,7 @@ def create_router(
         if not text:
             await message.answer("Пустая строка. Введите ключевое слово или нажмите ‘Отмена’.")
             return
-        try:
-            added = await repo.add_keyword(text)
-        except StorageFullError:
-            LOGGER.warning("Failed to add keyword: storage full", extra={"keyword": text})
-            await state.clear()
-            await _notify_storage_full_message(message)
-            await _send_keywords_page(message, repo, page=1)
-            return
+        added = await repo.add_keyword(text)
         await state.clear()
         if added:
             await message.answer(f"Добавлено ключевое слово: {text}")
@@ -603,69 +467,6 @@ def create_router(
         await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
         await callback.answer()
 
-    @router.callback_query(F.data.startswith("ai_models:"))
-    async def ai_models_cb(callback: CallbackQuery) -> None:
-        try:
-            _, page_str = (callback.data or "").split(":", 1)
-            page = max(1, int(page_str))
-        except Exception:
-            page = 1
-        await _send_embedding_models_page(
-            callback.message,
-            repo,
-            embedding_service,
-            page=page,
-            edit=True,
-        )  # type: ignore[arg-type]
-        await callback.answer()
-
-    @router.callback_query(F.data.startswith("ai_model_set:"))
-    async def ai_model_set_cb(callback: CallbackQuery) -> None:
-        model_name = (callback.data or "").split(":", 1)[1].strip()
-        if not model_name:
-            await callback.answer("Модель не указана", show_alert=True)
-            return
-        try:
-            available = await embedding_service.list_models()
-        except Exception:
-            LOGGER.exception("Failed to list Ollama models for selection")
-            await callback.answer("Не удалось получить список моделей из Ollama", show_alert=True)
-            return
-        if model_name not in available:
-            await callback.answer("Модель не найдена в Ollama", show_alert=True)
-            return
-        try:
-            await repo.set_embedding_model(model_name)
-            await embedding_service.set_active_model(model_name)
-            requeued = await repo.requeue_all_analyses()
-        except StorageFullError:
-            LOGGER.warning("Failed to update embedding model: storage full", extra={"model": model_name})
-            await _notify_storage_full_callback(callback)
-            return
-        await callback.answer("Модель обновлена", show_alert=False)
-        await _send_embedding_models_page(
-            callback.message,
-            repo,
-            embedding_service,
-            page=1,
-            edit=True,
-            notice=f"Активная модель: {model_name}. Переотправлено в анализ: {requeued}",
-        )  # type: ignore[arg-type]
-
-    @router.callback_query(F.data == "ai_model_back_settings")
-    async def ai_model_back_settings_cb(callback: CallbackQuery) -> None:
-        prefs = await repo.get_preferences()
-        text = _format_preferences(prefs) if prefs else "Настройки недоступны"
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        await callback.message.answer(
-            text,
-            reply_markup=settings_menu_keyboard(prefs.enabled if prefs else False),
-        )
-        await callback.answer()
-
     @router.callback_query(F.data.startswith("kw_clear_all:"))
     async def kw_clear_all_cb(callback: CallbackQuery) -> None:
         # Ask for confirmation in-place
@@ -699,12 +500,7 @@ def create_router(
             page = int(page_str)
         except Exception:
             page = 1
-        try:
-            await repo.clear_keywords()
-        except StorageFullError:
-            LOGGER.warning("Failed to clear keywords: storage full")
-            await _notify_storage_full_callback(callback)
-            return
+        await repo.clear_keywords()
         await callback.answer("Очищено")
         await _send_keywords_page(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
@@ -731,12 +527,7 @@ def create_router(
         if not target:
             await callback.answer("Элемент не найден", show_alert=True)
             return
-        try:
-            removed = await repo.remove_keyword(target)
-        except StorageFullError:
-            LOGGER.warning("Failed to remove keyword: storage full", extra={"keyword": target})
-            await _notify_storage_full_callback(callback)
-            return
+        removed = await repo.remove_keyword(target)
         if removed:
             await callback.answer("Удалено", show_alert=False)
         else:
@@ -766,12 +557,7 @@ def create_router(
         if not target:
             await callback.answer("Элемент не найден", show_alert=True)
             return
-        try:
-            removed = await repo.remove_keyword(target)
-        except StorageFullError:
-            LOGGER.warning("Failed to remove keyword (alpha view): storage full", extra={"keyword": target})
-            await _notify_storage_full_callback(callback)
-            return
+        removed = await repo.remove_keyword(target)
         await callback.answer("Удалено" if removed else "Не удалось удалить", show_alert=False)
         await _send_keywords_page_alpha(callback.message, repo, page=page, edit=True)  # type: ignore[arg-type]
 
@@ -780,38 +566,17 @@ def create_router(
         if not command.args:
             await message.answer("Укажи интервал, например: /set_interval 5m")
             return
-        args = command.args.split()
-        source_id = _parse_source_id(args[0] if args else None, provider_map, allow_unmatched=True)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        if source_id:
-            value = " ".join(args[1:])
-        else:
-            value = " ".join(args)
-        if not value:
-            await message.answer("Укажи интервал, например: /set_interval 5m")
-            return
         try:
-            seconds = parse_duration(value)
+            seconds = parse_duration(command.args)
         except ValueError as exc:
             await message.answer(f"Не удалось распознать интервал: {exc}")
             return
-        try:
-            await repo.set_interval(seconds)
-        except StorageFullError:
-            LOGGER.warning("Failed to set interval: storage full", extra={"seconds": seconds})
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_interval(seconds)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        scope = f"для {source_id}" if source_id else "для всех источников"
-        await message.answer(
-            f"Интервал обновлён: {seconds} секунд ({scope})",
-            reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin),
-        )
+        await message.answer(f"Интервал обновлён: {seconds} секунд", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Обработчик /cancel ниже оставлен для совместимости (глобальный выше перехватит)
 
@@ -829,12 +594,7 @@ def create_router(
             await message.answer(f"Не удалось распознать интервал: {exc}. Попробуй ещё раз.")
             return
         await state.clear()
-        try:
-            await repo.set_interval(seconds)
-        except StorageFullError:
-            LOGGER.warning("Failed to set interval (RU prompt): storage full", extra={"seconds": seconds})
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_interval(seconds)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         await message.answer(f"Интервал обновлён: {seconds} секунд")
@@ -844,38 +604,17 @@ def create_router(
         if not command.args:
             await message.answer("Укажи число страниц, например: /set_pages 2")
             return
-        args = command.args.split()
-        source_id = _parse_source_id(args[0] if args else None, provider_map, allow_unmatched=True)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        if source_id:
-            value = " ".join(args[1:])
-        else:
-            value = " ".join(args)
-        if not value:
-            await message.answer("Укажи число страниц, например: /set_pages 2")
-            return
         try:
-            pages = int(value.strip())
+            pages = int(command.args.strip())
             if pages <= 0:
                 raise ValueError
         except ValueError:
             await message.answer("Число страниц должно быть положительным целым")
             return
-        try:
-            await repo.set_pages(pages)
-        except StorageFullError:
-            LOGGER.warning("Failed to set pages: storage full", extra={"pages": pages})
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_pages(pages)
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        scope = f"для {source_id}" if source_id else "для всех источников"
-        await message.answer(
-            f"Количество страниц обновлено: {pages} ({scope})",
-            reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin),
-        )
+        await message.answer(f"Количество страниц обновлено: {pages}", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     # Кнопка: Страницы (запрос значения)
     @router.message(F.text.casefold() == "страницы")
@@ -893,40 +632,22 @@ def create_router(
             await message.answer("Число страниц должно быть положительным целым. Попробуй ещё раз.")
             return
         await state.clear()
-        try:
-            await repo.set_pages(pages)
-        except StorageFullError:
-            LOGGER.warning("Failed to set pages (RU prompt): storage full", extra={"pages": pages})
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_pages(pages)
         await message.answer(f"Количество страниц обновлено: {pages}")
 
     @router.message(Command("enable"))
     async def command_enable(message: Message) -> None:
-        try:
-            await repo.set_enabled(True)
-        except StorageFullError:
-            LOGGER.warning("Failed to enable monitoring: storage full")
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_enabled(True)
         # Избежать лавины: пометить текущие детекции как уже уведомлённые
-        for provider_config in provider_configs:
-            try:
-                await repo.seed_notifications_global_for_existing(provider_config.source_id)
-            except StorageFullError:
-                LOGGER.warning("Failed to seed notifications: storage full", extra={"source_id": provider_config.source_id})
-                await _notify_storage_full_message(message)
-                return
-            except Exception:
-                LOGGER.exception(
-                    "Failed to seed notifications for existing detections",
-                    extra={"source_id": provider_config.source_id},
-                )
+        try:
+            await repo.seed_notifications_global_for_existing(provider_config.source_id)
+        except Exception:
+            LOGGER.exception("Failed to seed notifications for existing detections")
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Мониторинг включён", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Мониторинг включён", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
 
     @router.message(F.text.casefold() == "включить")
     async def ru_enable(message: Message) -> None:
@@ -934,17 +655,32 @@ def create_router(
 
     @router.message(Command("disable"))
     async def command_disable(message: Message) -> None:
-        try:
-            await repo.set_enabled(False)
-        except StorageFullError:
-            LOGGER.warning("Failed to disable monitoring: storage full")
-            await _notify_storage_full_message(message)
-            return
+        await repo.set_enabled(False)
         await monitor_scheduler.refresh_schedule()
         await detail_scheduler.refresh_schedule()
         prefs = await repo.get_preferences()
         is_admin = bool(message.from_user and message.from_user.id == ADMIN_USER_ID)
-        await message.answer("Мониторинг выключен", reply_markup=main_menu_keyboard(prefs.enabled if prefs else False, admin=is_admin))
+        await message.answer("Мониторинг выключен", reply_markup=main_kb(prefs.enabled if prefs else False, is_admin=is_admin))
+
+    @router.message(Command("balance"))
+    async def command_balance(message: Message) -> None:
+        if not deepseek_balance_service:
+            await message.answer("DeepSeek не настроен: отсутствует API ключ.")
+            return
+        if not deepseek_config.enabled:
+            await message.answer("Интеграция DeepSeek отключена в конфигурации.")
+            return
+        try:
+            report = await deepseek_balance_service.get_report()
+        except Exception:
+            LOGGER.exception("Failed to fetch DeepSeek balance on demand")
+            await message.answer("Не удалось получить баланс DeepSeek. Проверьте API ключ и доступность сервиса.")
+            return
+        await message.answer(deepseek_balance_service.format_status_message(report))
+
+    @router.message(F.text.casefold() == "баланс ai")
+    async def ru_balance(message: Message) -> None:
+        await command_balance(message)
 
     @router.message(F.text.casefold() == "выключить")
     async def ru_disable(message: Message) -> None:
@@ -952,40 +688,32 @@ def create_router(
 
     @router.message(F.text.casefold() == "тест")
     async def ru_test(message: Message) -> None:
-        prefs = await repo.get_preferences()
-        if not prefs:
-            await message.answer("Сначала отправь /start")
-            return
-        text = _format_test_message(provider_configs)
-        await message.answer(text)
+        await command_test(message)
 
     @router.message(Command("test"))
-    async def command_test(message: Message, command: CommandObject) -> None:
+    async def command_test(message: Message) -> None:
         prefs = await repo.get_preferences()
         if not prefs:
             await message.answer("Сначала отправь /start")
             return
-        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        selected = _select_provider_configs(provider_configs, source_id)
-        text = _format_test_message(selected)
+        text = "\n".join(
+            [
+                f"🛒 Тестовое уведомление ({provider_config.source_id})",
+                "Название: Пример закупки",
+                f"Ссылка: {provider_config.base_url}",
+                "Номер: auc0000000000",
+            ]
+        )
         await message.answer(text)
 
     # --- Admin broadcast test to all authorized recipients ---
     @router.message(F.text.casefold() == "тест всем")
     async def ru_admin_broadcast_test(message: Message) -> None:
-        await _admin_broadcast_test(message, auth_state, provider_configs)
+        await _admin_broadcast_test(message, auth_state, provider_config)
 
     @router.message(Command("broadcast_test"))
-    async def command_broadcast_test(message: Message, command: CommandObject) -> None:
-        source_id = _parse_source_id(command.args, provider_map, allow_unmatched=False)
-        if source_id is False:
-            await message.answer(_format_sources_hint(provider_map))
-            return
-        selected = _select_provider_configs(provider_configs, source_id)
-        await _admin_broadcast_test(message, auth_state, selected)
+    async def command_broadcast_test(message: Message) -> None:
+        await _admin_broadcast_test(message, auth_state, provider_config)
 
     # Команды управления детсканером доступны только через переключатель мониторинга
 
@@ -1006,14 +734,12 @@ def _format_preferences(prefs: AppPreferences) -> str:
         "Настройки:",
         f"• Интервал проверки: {prefs.interval_seconds} сек.",
         f"• Страниц для проверки: {prefs.pages}",
-        f"• Embedding-модель: {prefs.embedding_model or '(по умолчанию)'}",
         "",
         "Ключевые слова:",
         kws_display,
         "",
         "Подсказки:",
         "• Кнопка ‘Ключевые слова’ — пришлите список, по одному на строку",
-        "• Кнопка ‘Модель AI’ — выбрать embedding-модель Ollama",
         "• ‘Интервал’ — например: 5m, 1h, 30s",
         "• ‘Страницы’ — положительное целое число",
         "• ‘Назад’ — вернуться в главное меню",
@@ -1021,266 +747,45 @@ def _format_preferences(prefs: AppPreferences) -> str:
     return "\n".join(lines)
 
 
-async def _format_status(
-    repo: Repository,
-    prefs: AppPreferences,
-    provider_configs: list[ProviderConfig],
-    *,
-    source_id: str | None = None,
-) -> str:
+async def _format_status(repo: Repository, prefs: AppPreferences, provider_config: ProviderConfig) -> str:
     status = "включён" if prefs.enabled else "выключен"
+    # Сегодня с полуночи по UTC (упрощённо)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+    # Счётчики
+    det_total = await repo.count_detections(source_id=provider_config.source_id)
+    det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
     pending_detail = await repo.count_pending_detail()
+    notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
+    notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
+    last_det = await repo.last_detection_time(source_id=provider_config.source_id)
+    last_notif = await repo.last_notification_time_global(source_id=provider_config.source_id)
 
-    selected = _select_provider_configs(provider_configs, source_id)
     kws = prefs.keywords or []
     kws_display = "\n".join(kws[:10]) if kws else "(нет)"
     if kws and len(kws) > 10:
         kws_display += f"\n… и ещё {len(kws) - 10}"
 
-    blocks: list[str] = [
+    lines = [
         f"Статус мониторинга: {status}",
         f"Интервал опроса: {prefs.interval_seconds} сек.",
+        f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
         f"Страниц для проверки: {prefs.pages}",
-        f"Embedding-модель: {prefs.embedding_model or '(по умолчанию)'}",
         "",
-        f"Очередь детсканера: {pending_detail}",
+        "Данные:",
+        f"• Детекции: всего {det_total}, сегодня {det_today}",
+        f"• Очередь детсканера: {pending_detail}",
+        f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
     ]
-
-    for provider_config in selected:
-        det_total = await repo.count_detections(source_id=provider_config.source_id)
-        det_today = await repo.count_detections(source_id=provider_config.source_id, since=today_start)
-        notif_total = await repo.count_notifications_global(source_id=provider_config.source_id)
-        notif_today = await repo.count_notifications_global(source_id=provider_config.source_id, since=today_start)
-        last_det = await repo.last_detection_time(source_id=provider_config.source_id)
-        last_notif = await repo.last_notification_time_global(source_id=provider_config.source_id)
-
-        block_lines = [
-            "",
-            f"Источник: {provider_config.source_id}",
-            f"Интервал детсканера: {provider_config.detail.interval_seconds} сек.",
-            f"• Детекции: всего {det_total}, сегодня {det_today}",
-            f"• Отправленные уведомления: всего {notif_total}, сегодня {notif_today}",
-        ]
-        if last_det:
-            block_lines.append(f"• Последняя детекция: {last_det}")
-        if last_notif:
-            block_lines.append(f"• Последнее уведомление: {last_notif}")
-        blocks.extend(block_lines)
-
-    blocks.extend([
+    if last_det:
+        lines.append(f"• Последняя детекция: {last_det}")
+    if last_notif:
+        lines.append(f"• Последнее уведомление: {last_notif}")
+    lines.extend([
         "",
         "Ключевые слова:",
         kws_display,
     ])
-    return "\n".join(blocks)
-
-
-def _format_sources_hint(provider_map: dict[str, ProviderConfig]) -> str:
-    if not provider_map:
-        return "Источники не настроены."
-    ids = ", ".join(sorted(provider_map.keys()))
-    return f"Неизвестный source_id. Доступные: {ids}"
-
-
-def _parse_source_id(
-    raw_args: str | None,
-    provider_map: dict[str, ProviderConfig],
-    *,
-    allow_unmatched: bool,
-) -> str | None | bool:
-    if not raw_args:
-        return None
-    source_id = raw_args.strip().split()[0]
-    if source_id in provider_map:
-        return source_id
-    return None if allow_unmatched else False
-
-
-def _select_provider_configs(provider_configs: list[ProviderConfig], source_id: str | None) -> list[ProviderConfig]:
-    if source_id:
-        return [config for config in provider_configs if config.source_id == source_id]
-    return list(provider_configs)
-
-
-def _format_test_message(provider_configs: list[ProviderConfig]) -> str:
-    if not provider_configs:
-        return "Нет настроенных источников."
-    blocks: list[str] = []
-    for provider_config in provider_configs:
-        blocks.append(
-            "\n".join(
-                [
-                    f"🛒 Тестовое уведомление ({provider_config.source_id})",
-                    "Название: Пример закупки",
-                    f"Ссылка: {provider_config.base_url}",
-                    "Номер: auc0000000000",
-                ]
-            )
-        )
-    return "\n\n".join(blocks)
-
-
-async def _send_embedding_models_page(
-    target: Message,
-    repo: Repository,
-    embedding_service: EmbeddingService,
-    *,
-    page: int,
-    per_page: int = 8,
-    edit: bool = False,
-    notice: str | None = None,
-) -> None:
-    prefs = await repo.get_preferences()
-    current_model = (prefs.embedding_model if prefs else None) or await embedding_service.get_active_model()
-    try:
-        items = await embedding_service.list_models()
-    except Exception:
-        LOGGER.exception("Failed to list Ollama models")
-        text = "Не удалось получить список моделей из Ollama. Проверьте, что Ollama запущен и доступен."
-        if edit:
-            try:
-                await target.edit_text(text)
-            except Exception:
-                await target.answer(text)
-        else:
-            await target.answer(text)
-        return
-
-    if not items:
-        text = "Ollama не вернул ни одной модели. Сначала скачайте модель через `ollama pull ...`."
-        if edit:
-            try:
-                await target.edit_text(text)
-            except Exception:
-                await target.answer(text)
-        else:
-            await target.answer(text)
-        return
-
-    max_page = max(1, (len(items) + per_page - 1) // per_page)
-    page = max(1, min(page, max_page))
-    start = (page - 1) * per_page
-    end = min(start + per_page, len(items))
-    view = items[start:end]
-
-    rows: list[list[InlineKeyboardButton]] = []
-    for model_name in view:
-        marker = "✅ " if model_name == current_model else ""
-        label = f"{marker}{model_name}"
-        if len(label) > 60:
-            label = label[:57] + "..."
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"ai_model_set:{model_name}")])
-
-    nav: list[InlineKeyboardButton] = []
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"ai_models:{page - 1}"))
-    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"ai_models:{page}"))
-    if page < max_page:
-        nav.append(InlineKeyboardButton(text="➡", callback_data=f"ai_models:{page + 1}"))
-    rows.append(nav)
-    rows.append([InlineKeyboardButton(text="⬅ Назад", callback_data="ai_model_back_settings")])
-
-    lines = [
-        "Доступные embedding-модели Ollama:",
-        f"Текущая модель: {current_model}",
-        "",
-        "Нажмите на модель, чтобы сделать её активной.",
-    ]
-    if notice:
-        lines.extend(["", notice])
-    text = "\n".join(lines)
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    if edit:
-        try:
-            await target.edit_text(text, reply_markup=kb)
-        except Exception:
-            await target.answer(text, reply_markup=kb)
-    else:
-        await target.answer(text, reply_markup=kb)
-
-
-def _build_clear_detections_keyboard(provider_configs: list[ProviderConfig]) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for provider_config in provider_configs:
-        rows.append(
-            [InlineKeyboardButton(text=f"✅ Очистить {provider_config.source_id}", callback_data=f"confirm_clear_det:{provider_config.source_id}")]
-        )
-    if len(provider_configs) > 1:
-        rows.append([InlineKeyboardButton(text="🧹 Очистить все источники", callback_data="confirm_clear_det:all")])
-    rows.append([InlineKeyboardButton(text="Отмена", callback_data="cancel_clear_det")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-async def _send_detections_page(
-    target: Message,
-    repo: Repository,
-    provider_map: dict[str, ProviderConfig],
-    *,
-    page: int,
-    per_page: int = 5,
-    source_id: str | None,
-    edit: bool = False,
-) -> None:
-    since = datetime.utcnow() - timedelta(days=7)
-    total = await repo.count_detections(source_id=source_id, since=since)
-    source_label = source_id or "все источники"
-    header = f"Детекции за последние 7 дней ({source_label})"
-    if total == 0:
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="⬅ Назад", callback_data="det_back_menu")]]
-        )
-        if edit:
-            try:
-                await target.edit_text("Детекций за последние 7 дней нет.", reply_markup=kb)
-            except Exception:
-                await target.answer("Детекций за последние 7 дней нет.", reply_markup=kb)
-        else:
-            await target.answer("Детекций за последние 7 дней нет.", reply_markup=kb)
-        return
-    max_page = max(1, (total + per_page - 1) // per_page)
-    page = max(1, min(page, max_page))
-    offset = (page - 1) * per_page
-    rows = await repo.list_detections(
-        since=since,
-        source_id=source_id,
-        limit=per_page,
-        offset=offset,
-    )
-
-    lines: list[str] = [header, ""]
-    index = offset + 1
-    for det_source, ext_id, title, url, first_seen in rows:
-        title_text = html.escape(title or "Без названия")
-        url_text = html.escape(url)
-        source_text = html.escape(det_source)
-        when_text = html.escape(str(first_seen))
-        lines.append(f"{index}. <a href=\"{url_text}\">{title_text}</a>")
-        lines.append(f"{source_text} • {when_text} • {html.escape(ext_id)}")
-        lines.append("")
-        index += 1
-    text = "\n".join(lines).strip()
-
-    nav: list[InlineKeyboardButton] = []
-    source_token = source_id or "all"
-    if page > 1:
-        nav.append(InlineKeyboardButton(text="⬅", callback_data=f"det_list:{page-1}:{source_token}"))
-    nav.append(InlineKeyboardButton(text=f"Стр. {page}/{max_page}", callback_data=f"det_list:{page}:{source_token}"))
-    if page < max_page:
-        nav.append(InlineKeyboardButton(text="➡", callback_data=f"det_list:{page+1}:{source_token}"))
-    rows_kb: list[list[InlineKeyboardButton]] = []
-    if nav:
-        rows_kb.append(nav)
-    rows_kb.append([InlineKeyboardButton(text="⬅ Назад", callback_data="det_back_menu")])
-    kb = InlineKeyboardMarkup(inline_keyboard=rows_kb)
-
-    if edit:
-        try:
-            await target.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            await target.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
-    else:
-        await target.answer(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+    return "\n".join(lines)
 
 
 # Helpers for keywords management
@@ -1403,7 +908,7 @@ def _chunk_lines(lines: list[str], *, header: str = "", max_chars: int = 3500) -
         chunks.append(text)
     return chunks
 
-async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_configs: list[ProviderConfig]) -> None:
+async def _admin_broadcast_test(message: Message, auth_state: AuthState, provider_config: ProviderConfig) -> None:
     uid = message.from_user.id if message.from_user else 0
     if uid != ADMIN_USER_ID:
         await message.answer("Недоступно")
@@ -1414,7 +919,14 @@ async def _admin_broadcast_test(message: Message, auth_state: AuthState, provide
     if not targets:
         await message.answer("Нет авторизованных получателей")
         return
-    text = _format_test_message(provider_configs)
+    text = "\n".join(
+        [
+            f"🛒 Тестовое уведомление ({provider_config.source_id})",
+            "Название: Пример закупки",
+            f"Ссылка: {provider_config.base_url}",
+            "Номер: auc0000000000",
+        ]
+    )
     sent = 0
     for chat_id in sorted(set(targets)):
         try:

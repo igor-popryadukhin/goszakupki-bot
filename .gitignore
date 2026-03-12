@@ -9,4 +9,3 @@ poetry.lock
 .data/
 data/
 .idea/
-logs/

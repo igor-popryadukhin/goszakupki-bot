@@ -13,7 +13,6 @@ def main_menu_keyboard(
     rows = [
         [KeyboardButton(text="Настройки"), KeyboardButton(text="Статус")],
         [KeyboardButton(text=toggle_text), KeyboardButton(text="Помощь")],
-        [KeyboardButton(text="Шутка")],
     ]
     if deepseek_balance_available:
         rows.append([KeyboardButton(text="Баланс AI")])
@@ -26,9 +25,7 @@ def settings_menu_keyboard(enabled: bool = False) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Ключевые слова")],
-            [KeyboardButton(text="Модель AI")],
             [KeyboardButton(text="Интервал"), KeyboardButton(text="Страницы")],
-            [KeyboardButton(text="Детекции")],
             [KeyboardButton(text="Очистить детекции")],
             [KeyboardButton(text="Назад")],
         ],
