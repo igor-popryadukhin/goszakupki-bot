@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from ..config import ProviderConfig
 from ..db.repo import Repository, AppPreferences
 from ..provider.base import SourceProvider
-from .match import Keyword, compile_keywords
+from .match import Keyword, compile_keywords, find_matching_keywords
 from .semantic import SemanticMatcher, SemanticMatch
 
 LOGGER = logging.getLogger(__name__)
@@ -83,8 +83,8 @@ class DetailScanService:
         semantic_summary: str | None = None
         if prefs and prefs.enabled and keywords:
             matched: list[Keyword] = []
+            combined_text = self._combine_title_and_text(item.title, text)
             if self._semantic_matcher and text:
-                combined_text = self._combine_title_and_text(item.title, text)
                 try:
                     analysis = await self._semantic_matcher.match_keywords(
                         combined_text,
@@ -111,6 +111,13 @@ class DetailScanService:
                             )
                         )
                     semantic_summary = (analysis.summary or "").strip() or None
+            if not matched:
+                matched = find_matching_keywords(combined_text, keywords)
+                if matched:
+                    LOGGER.info(
+                        "Detail fallback matched keywords without DeepSeek",
+                        extra={"external_id": item.external_id, "keywords": [kw.raw for kw in matched]},
+                    )
             if matched and not await self._repo.has_notification_global_sent(self._config.source_id, item.external_id):
                 message = self._format_message(
                     item.url,

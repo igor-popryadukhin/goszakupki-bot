@@ -91,6 +91,12 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
                 data = await response.json()
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                "DeepSeek API request timed out",
+                extra={"timeout_seconds": self._config.timeout_seconds},
+            )
+            return None
         except Exception:
             LOGGER.exception("Failed to call DeepSeek API")
             return None
@@ -102,9 +108,12 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
             if self._session is None:
                 if not self._config.api_key:
                     raise RuntimeError("DeepSeek API key is not configured")
+                api_key = self._config.api_key.strip()
+                if not api_key:
+                    raise RuntimeError("DeepSeek API key is empty after trimming")
                 timeout = aiohttp.ClientTimeout(total=self._config.timeout_seconds)
                 headers = {
-                    "Authorization": f"Bearer {self._config.api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
                 self._session = aiohttp.ClientSession(timeout=timeout, headers=headers)
@@ -235,4 +244,3 @@ class DeepSeekSemanticAnalyzer(SemanticMatcher):
             return None
 
         return SemanticAnalysis(summary=summary, matches=result)
-

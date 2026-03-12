@@ -103,7 +103,7 @@ class DeepSeekConfig:
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-chat"
     enabled: bool = False
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 15.0
     min_score: float = 0.6
     max_chars: int = 6000
     max_keywords: int = 25
@@ -214,7 +214,7 @@ def load_config() -> AppConfig:
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
         enabled=deepseek_enabled,
-        timeout_seconds=_get_float("DEEPSEEK_TIMEOUT_SECONDS", 30.0),
+        timeout_seconds=_get_float("DEEPSEEK_TIMEOUT_SECONDS", 15.0),
         min_score=_get_float("DEEPSEEK_MIN_SCORE", 0.6),
         max_chars=_get_int("DEEPSEEK_MAX_CHARS", 6000),
         max_keywords=_get_int("DEEPSEEK_MAX_KEYWORDS", 25),
