@@ -10,6 +10,10 @@ readonly DATA_DIR="$ROOT_DIR/data"
 
 COMPOSE_CMD=()
 
+log_section() {
+  printf '\n[deploy] === %s ===\n' "$*"
+}
+
 log() {
   printf '[deploy] %s\n' "$*"
 }
@@ -22,15 +26,65 @@ fail() {
 require_command() {
   local command_name="$1"
   command -v "$command_name" >/dev/null 2>&1 || fail "Command not found: $command_name"
+  log "Found command: $command_name"
+}
+
+mask_value() {
+  local value="$1"
+  local visible_prefix="${2:-4}"
+
+  if [[ -z "$value" ]]; then
+    printf '<empty>'
+    return
+  fi
+
+  if (( ${#value} <= visible_prefix )); then
+    printf '***'
+    return
+  fi
+
+  printf '%s***' "${value:0:visible_prefix}"
+}
+
+print_runtime_summary() {
+  local branch head origin_url
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  head="$(git rev-parse --short HEAD)"
+  origin_url="$(git remote get-url origin)"
+
+  log "Repository: $ROOT_DIR"
+  log "Git branch: $branch"
+  log "Git HEAD: $head"
+  log "Git origin: $origin_url"
+  log "Compose command: ${COMPOSE_CMD[*]}"
+  log "Env file: $ENV_FILE"
+  log "Data dir: $DATA_DIR"
+}
+
+print_env_summary() {
+  local telegram_token auth_login auth_password deepseek_key
+  telegram_token="$(get_env_value "TELEGRAM_BOT_TOKEN")"
+  auth_login="$(get_env_value "AUTH_LOGIN")"
+  auth_password="$(get_env_value "AUTH_PASSWORD")"
+  deepseek_key="$(get_env_value "DEEPSEEK_API_KEY")"
+
+  log "Environment summary:"
+  log "  TELEGRAM_BOT_TOKEN=$(mask_value "$telegram_token")"
+  log "  AUTH_LOGIN=${auth_login:-<empty>}"
+  log "  AUTH_PASSWORD=$(mask_value "$auth_password" 0)"
+  log "  DEEPSEEK_API_KEY=$(mask_value "$deepseek_key")"
+  log "  data dir writable=yes"
 }
 
 detect_compose() {
   if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD=(docker compose)
+    log "Using compose implementation: docker compose"
     return
   fi
   if command -v docker-compose >/dev/null 2>&1; then
     COMPOSE_CMD=(docker-compose)
+    log "Using compose implementation: docker-compose"
     return
   fi
   fail "Neither 'docker compose' nor 'docker-compose' is available"
@@ -39,31 +93,45 @@ detect_compose() {
 ensure_repo_root() {
   [[ -f "$ROOT_DIR/docker-compose.yml" ]] || fail "docker-compose.yml not found in $ROOT_DIR"
   [[ -d "$ROOT_DIR/.git" ]] || fail ".git directory not found in $ROOT_DIR"
+  log "Repository root check passed"
 }
 
 ensure_git_main_clean() {
   local current_branch
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   [[ "$current_branch" == "main" ]] || fail "Current branch is '$current_branch'. Switch to 'main' before deploy."
+  log "Current branch is main"
 
   if [[ -n "$(git status --porcelain)" ]]; then
     fail "Working tree has local changes. Commit, stash, or discard them before deploy."
   fi
+  log "Working tree is clean"
 
   git remote get-url origin >/dev/null 2>&1 || fail "Git remote 'origin' is not configured"
+  log "Git remote 'origin' is configured"
 }
 
 update_code() {
+  local before_head after_head
+  before_head="$(git rev-parse --short HEAD)"
   log "Fetching latest changes from origin/main"
   git fetch origin main
   log "Updating local main with fast-forward only"
   git pull --ff-only origin main
+  after_head="$(git rev-parse --short HEAD)"
+  if [[ "$before_head" == "$after_head" ]]; then
+    log "Repository already up to date at $after_head"
+  else
+    log "Updated repository: $before_head -> $after_head"
+  fi
 }
 
 ensure_env_file() {
   if [[ ! -f "$ENV_FILE" ]]; then
     log "Creating empty .env"
     : >"$ENV_FILE"
+  else
+    log ".env already exists"
   fi
 }
 
@@ -195,16 +263,19 @@ run_env_wizard() {
   auth_password="$(get_env_value "AUTH_PASSWORD")"
 
   if [[ -z "$telegram_token" ]]; then
+    log "Missing required value: TELEGRAM_BOT_TOKEN"
     telegram_token="$(prompt_required_value "TELEGRAM_BOT_TOKEN" "Enter TELEGRAM_BOT_TOKEN" 1)"
     ENV_VALUES["TELEGRAM_BOT_TOKEN"]="$telegram_token"
     managed_keys+=("TELEGRAM_BOT_TOKEN")
   fi
 
   if [[ -n "$auth_login" && -z "$auth_password" ]]; then
+    log "AUTH_LOGIN is set but AUTH_PASSWORD is missing"
     auth_password="$(prompt_required_value "AUTH_PASSWORD" "Enter AUTH_PASSWORD for existing AUTH_LOGIN" 1)"
     ENV_VALUES["AUTH_PASSWORD"]="$auth_password"
     managed_keys+=("AUTH_PASSWORD")
   elif [[ -z "$auth_login" && -n "$auth_password" ]]; then
+    log "AUTH_PASSWORD is set but AUTH_LOGIN is missing"
     auth_login="$(prompt_required_value "AUTH_LOGIN" "Enter AUTH_LOGIN for existing AUTH_PASSWORD" 0)"
     ENV_VALUES["AUTH_LOGIN"]="$auth_login"
     managed_keys+=("AUTH_LOGIN")
@@ -220,20 +291,24 @@ run_env_wizard() {
 
 ensure_data_dir() {
   mkdir -p "$DATA_DIR"
+  log "Ensured data directory exists: $DATA_DIR"
 
   local probe_file
   probe_file="$(mktemp "$DATA_DIR/.deploy-write-check.XXXXXX")" || fail "Directory $DATA_DIR is not writable"
   rm -f "$probe_file"
+  log "Data directory is writable"
 }
 
 validate_compose() {
   log "Validating docker compose configuration"
   "${COMPOSE_CMD[@]}" config >/dev/null
+  log "Compose configuration is valid"
 }
 
 deploy_stack() {
   log "Building and starting containers"
   "${COMPOSE_CMD[@]}" up -d --build
+  log "Compose deploy finished"
 }
 
 show_status() {
@@ -243,16 +318,27 @@ show_status() {
 }
 
 main() {
+  log_section "Bootstrap"
   require_command git
   require_command docker
   detect_compose
   ensure_repo_root
+  print_runtime_summary
+
+  log_section "Git Checks"
   ensure_git_main_clean
   update_code
+
+  log_section "Environment"
   run_env_wizard
   ensure_data_dir
+  print_env_summary
+
+  log_section "Compose"
   validate_compose
   deploy_stack
+
+  log_section "Status"
   show_status
 }
 
