@@ -28,6 +28,7 @@
 
 Обязательные переменные окружения:
 - `TELEGRAM_BOT_TOKEN`
+- `DEEPSEEK_API_KEY`
 - `AUTH_LOGIN` и `AUTH_PASSWORD` только парой, если включаете авторизацию
 
 Остальные параметры опциональны и имеют значения по умолчанию в приложении или `docker-compose.yml`.
@@ -47,7 +48,7 @@
    DETAIL_BACKOFF_BASE_SECONDS=60
    DETAIL_BACKOFF_FACTOR=2.0
    DETAIL_BACKOFF_MAX_SECONDS=3600
-   # DeepSeek API (опционально)
+   # DeepSeek API
    DEEPSEEK_API_KEY=sk-...
    DEEPSEEK_ENABLED=1
    DEEPSEEK_MODEL=deepseek-chat

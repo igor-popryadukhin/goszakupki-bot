@@ -257,8 +257,9 @@ run_env_wizard() {
   declare -gA ENV_VALUES=()
   local managed_keys=()
 
-  local telegram_token auth_login auth_password
+  local telegram_token deepseek_key auth_login auth_password
   telegram_token="$(get_env_value "TELEGRAM_BOT_TOKEN")"
+  deepseek_key="$(get_env_value "DEEPSEEK_API_KEY")"
   auth_login="$(get_env_value "AUTH_LOGIN")"
   auth_password="$(get_env_value "AUTH_PASSWORD")"
 
@@ -267,6 +268,13 @@ run_env_wizard() {
     telegram_token="$(prompt_required_value "TELEGRAM_BOT_TOKEN" "Enter TELEGRAM_BOT_TOKEN" 1)"
     ENV_VALUES["TELEGRAM_BOT_TOKEN"]="$telegram_token"
     managed_keys+=("TELEGRAM_BOT_TOKEN")
+  fi
+
+  if [[ -z "$deepseek_key" ]]; then
+    log "Missing required value: DEEPSEEK_API_KEY"
+    deepseek_key="$(prompt_required_value "DEEPSEEK_API_KEY" "Enter DEEPSEEK_API_KEY" 1)"
+    ENV_VALUES["DEEPSEEK_API_KEY"]="$deepseek_key"
+    managed_keys+=("DEEPSEEK_API_KEY")
   fi
 
   if [[ -n "$auth_login" && -z "$auth_password" ]]; then
